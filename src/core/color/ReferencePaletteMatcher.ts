@@ -72,19 +72,28 @@ export function applyPaletteMatch(
     const preserveShading = clamp01(options.preserveShading ?? DEFAULT_PRESERVE_SHADING);
     const output = new ImageData(new Uint8ClampedArray(frame.data), frame.width, frame.height);
     const data = output.data;
+    const sourcePalette = extractReferencePalette(frame, {
+        paletteSize: Math.min(colors.length, options.paletteSize ?? DEFAULT_PALETTE_SIZE) as PaletteSize,
+        alphaThreshold,
+        maxSamplePixels: Math.min(options.maxSamplePixels ?? DEFAULT_MAX_SAMPLE_PIXELS, 12000)
+    }).colors;
+    const paletteMap = buildLightnessPaletteMap(sourcePalette, colors);
 
     for (let i = 0; i < data.length; i += 4) {
         const alpha = data[i + 3];
         if (alpha <= alphaThreshold) continue;
 
         const oldLab = rgbToLab(data[i], data[i + 1], data[i + 2]);
-        const nearest = findNearestPaletteLab(oldLab, colors);
-        if (!nearest) continue;
+        const nearestSourceIndex = sourcePalette.length > 0 ? findNearestIndex(oldLab, sourcePalette) : -1;
+        const target = nearestSourceIndex >= 0
+            ? paletteMap[nearestSourceIndex]
+            : findNearestPaletteLab(oldLab, colors);
+        if (!target) continue;
 
         const matched: LabColor = {
-            l: oldLab.l * preserveShading + nearest.l * (1 - preserveShading),
-            a: oldLab.a * (1 - strength) + nearest.a * strength,
-            b: oldLab.b * (1 - strength) + nearest.b * strength
+            l: oldLab.l * preserveShading + target.l * (1 - preserveShading),
+            a: oldLab.a * (1 - strength) + target.a * strength,
+            b: oldLab.b * (1 - strength) + target.b * strength
         };
         const rgb = labToRgb(matched.l, matched.a, matched.b);
         data[i] = rgb.r;
@@ -117,6 +126,7 @@ export function applyPaletteMatchToFrames(
 function sampleValidLabPixels(imageData: ImageData, alphaThreshold: number, maxSamples: number): LabColor[] {
     const data = imageData.data;
     const validCount = countValidPixels(data, alphaThreshold);
+    const skipFlatOpaqueBackground = !hasMeaningfulTransparency(data);
     if (validCount === 0) return [];
 
     const stride = Math.max(1, Math.ceil(validCount / Math.max(1, maxSamples)));
@@ -132,6 +142,23 @@ function sampleValidLabPixels(imageData: ImageData, alphaThreshold: number, maxS
     return pixels;
 }
 
+function hasMeaningfulTransparency(data: Uint8ClampedArray): boolean {
+    for (let i = 3; i < data.length; i += 4) {
+        if (data[i] < 250) return true;
+    }
+    return false;
+}
+
+function isLikelyFlatBackground(r: number, g: number, b: number): boolean {
+    const rn = r / 255;
+    const gn = g / 255;
+    const bn = b / 255;
+    const max = Math.max(rn, gn, bn);
+    const min = Math.min(rn, gn, bn);
+    const saturation = max === 0 ? 0 : (max - min) / max;
+    const luminance = 0.299 * rn + 0.587 * gn + 0.114 * bn;
+    return saturation < 0.08 && (luminance > 0.92 || luminance < 0.06);
+}
 function countValidPixels(data: Uint8ClampedArray, alphaThreshold: number): number {
     let count = 0;
     for (let i = 3; i < data.length; i += 4) {
@@ -198,6 +225,26 @@ function initializeCenters(pixels: LabColor[], k: number): LabColor[] {
     return centers;
 }
 
+function buildLightnessPaletteMap(sourcePalette: LabColor[], referencePalette: LabColor[]): LabColor[] {
+    if (sourcePalette.length === 0 || referencePalette.length === 0) return [];
+
+    const sourceSorted = sourcePalette
+        .map((color, index) => ({ color, index }))
+        .sort((left, right) => left.color.l - right.color.l);
+    const referenceSorted = referencePalette
+        .slice()
+        .sort((left, right) => left.l - right.l);
+    const mapped = new Array<LabColor>(sourcePalette.length);
+
+    for (let rank = 0; rank < sourceSorted.length; rank++) {
+        const refRank = sourceSorted.length === 1
+            ? Math.floor(referenceSorted.length / 2)
+            : Math.round(rank * (referenceSorted.length - 1) / (sourceSorted.length - 1));
+        mapped[sourceSorted[rank].index] = referenceSorted[Math.max(0, Math.min(referenceSorted.length - 1, refRank))];
+    }
+
+    return mapped;
+}
 function findNearestPaletteLab(color: LabColor, palette: LabColor[]): LabColor | null {
     let bestIndex = -1;
     let bestDistance = Number.POSITIVE_INFINITY;
@@ -295,4 +342,6 @@ function clampByte(value: number): number {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(255, Math.round(value)));
 }
+
+
 
