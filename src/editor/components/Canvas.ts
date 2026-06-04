@@ -63,6 +63,7 @@ export class Canvas extends EventEmitter {
     private _activeHandle: string = '';  // 'tl', 'tr', 'bl', 'br', 't', 'b', 'l', 'r'
     private _mirrorMode: boolean = false;
     private _colorFilter: string = 'none';
+    private _palettePreviewImage: HTMLCanvasElement | null = null;
 
     private _isPanning: boolean = false;
     private _isDraggingPivot: boolean = false;
@@ -258,6 +259,11 @@ export class Canvas extends EventEmitter {
 
     get colorFilter(): string {
         return this._colorFilter;
+    }
+
+    setPalettePreviewImage(image: HTMLCanvasElement | null): void {
+        this._palettePreviewImage = image;
+        this.render();
     }
 
     // ========================================================================
@@ -569,12 +575,20 @@ export class Canvas extends EventEmitter {
         const width = frame.sourceRect.w * zoom * scaleX;
         const height = frame.sourceRect.h * zoom * scaleY;
 
+        const imageElement = (!tint && frame === this._currentFrame && this._palettePreviewImage)
+            ? this._palettePreviewImage
+            : frame.image.element;
+        const sx = imageElement === this._palettePreviewImage ? 0 : frame.sourceRect.x;
+        const sy = imageElement === this._palettePreviewImage ? 0 : frame.sourceRect.y;
+        const sw = imageElement === this._palettePreviewImage ? imageElement.width : frame.sourceRect.w;
+        const sh = imageElement === this._palettePreviewImage ? imageElement.height : frame.sourceRect.h;
+
         if (tint) {
             // For onion skin, draw with color tint
             ctx.drawImage(
-                frame.image.element,
-                frame.sourceRect.x, frame.sourceRect.y,
-                frame.sourceRect.w, frame.sourceRect.h,
+                imageElement,
+                sx, sy,
+                sw, sh,
                 screenPos.x, screenPos.y,
                 width, height
             );
@@ -583,9 +597,9 @@ export class Canvas extends EventEmitter {
             ctx.fillRect(screenPos.x, screenPos.y, width, height);
         } else {
             ctx.drawImage(
-                frame.image.element,
-                frame.sourceRect.x, frame.sourceRect.y,
-                frame.sourceRect.w, frame.sourceRect.h,
+                imageElement,
+                sx, sy,
+                sw, sh,
                 screenPos.x, screenPos.y,
                 width, height
             );
@@ -903,3 +917,4 @@ export class Canvas extends EventEmitter {
         this.removeAllListeners();
     }
 }
+

@@ -85,9 +85,9 @@ export function applyPaletteMatch(
 
         const oldLab = rgbToLab(data[i], data[i + 1], data[i + 2]);
         const nearestSourceIndex = sourcePalette.length > 0 ? findNearestIndex(oldLab, sourcePalette) : -1;
-        const target = nearestSourceIndex >= 0
-            ? paletteMap[nearestSourceIndex]
-            : findNearestPaletteLab(oldLab, colors);
+        const directTarget = findNearestPaletteLab(oldLab, colors);
+        const remapTarget = nearestSourceIndex >= 0 ? paletteMap[nearestSourceIndex] : null;
+        const target = blendLabTargets(directTarget, remapTarget, 0.3);
         if (!target) continue;
 
         const matched: LabColor = {
@@ -225,6 +225,16 @@ function initializeCenters(pixels: LabColor[], k: number): LabColor[] {
     return centers;
 }
 
+function blendLabTargets(primary: LabColor | null, secondary: LabColor | null, secondaryWeight: number): LabColor | null {
+    if (!primary) return secondary;
+    if (!secondary) return primary;
+    const weight = Math.max(0, Math.min(1, secondaryWeight));
+    return {
+        l: primary.l * (1 - weight) + secondary.l * weight,
+        a: primary.a * (1 - weight) + secondary.a * weight,
+        b: primary.b * (1 - weight) + secondary.b * weight
+    };
+}
 function buildLightnessPaletteMap(sourcePalette: LabColor[], referencePalette: LabColor[]): LabColor[] {
     if (sourcePalette.length === 0 || referencePalette.length === 0) return [];
 
@@ -342,6 +352,7 @@ function clampByte(value: number): number {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(255, Math.round(value)));
 }
+
 
 
 

@@ -695,6 +695,7 @@ class MobikEditor {
     private selectFrame(index: number, updateTimeline: boolean = true): void {
         const frame = this._project.animation.getFrame(index);
 
+        this._canvas.setPalettePreviewImage(null);
         this._canvas.setCurrentFrame(frame || null);
         this._pivotEditor.setFrame(frame || null);
 
@@ -1376,6 +1377,10 @@ class MobikEditor {
         const palette = this.getReferencePalette();
         const after = palette ? applyPaletteMatch(before, palette, this._paletteMatchOptions) : before;
 
+        if (frameIndex === this._timeline.selectedIndex) {
+            this._canvas.setPalettePreviewImage(palette ? SpritesheetExporter.imageDataToCanvas(after) : null);
+        }
+
         this.drawImageDataPreview('palette-preview-before', before);
         this.drawImageDataPreview('palette-preview-after', after);
         this.drawImageDataPreview('palette-animation-preview', after);
@@ -1458,6 +1463,7 @@ class MobikEditor {
         }
 
         this._paletteCache = null;
+        this._canvas.setPalettePreviewImage(null);
         this._canvas.render();
         this.updateNormalizedPreview();
         this.updatePaletteMatchPreview();
@@ -2098,7 +2104,7 @@ class MobikEditor {
                 encoding: 'base64'
             });
 
-            const companionMetaPath = result.filePath.replace(/\.[^\.]+$/, '.json');
+            const companionMetaPath = path.join(path.dirname(result.filePath), 'meta.json');
             const companionMeta = this.buildScaledSpritesheetMeta(result.filePath, spritesheetResult);
             await ipcRenderer.invoke(IPC_CHANNELS.WRITE_FILE, companionMetaPath, companionMeta);
 
@@ -2793,6 +2799,10 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('[Mobik] Failed to initialize editor:', error);
     }
 });
+
+
+
+
 
 
 
