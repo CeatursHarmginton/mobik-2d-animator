@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com">
+    <title>Mobik Animator</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+
+<body>
+    <div id="app">
+        <!-- Toolbar -->
+        <header id="toolbar-container"></header>
+
+        <!-- Main Content -->
+        <main id="main-content">
+            <!-- Canvas Area -->
+            <section id="canvas-area">
+                <div id="canvas-container"></div>
+
+                <!-- Player Mode Canvas (separate from editor) -->
+                <div id="player-canvas-container" class="hidden">
+                    <canvas id="player-canvas"></canvas>
+                </div>
+
+                <!-- Normalized Preview Panel -->
+                <div id="normalized-preview" class="preview-panel">
+                    <div class="preview-header" id="preview-drag-handle">
+                        <span>Export Preview</span>
+                        <div class="preview-header-controls">
+                            <span id="preview-size">64×64</span>
+                            <button class="preview-toggle-btn" id="preview-collapse-btn" title="Collapse">▼</button>
+                            <button class="preview-toggle-btn" id="preview-hide-btn" title="Hide">✕</button>
+                        </div>
+                    </div>
+                    <div class="preview-canvas-container">
+                        <canvas id="preview-canvas"></canvas>
+                    </div>
+                    <div class="preview-scale-selector">
+                        <button class="preview-scale-btn active" data-scale="1">1×</button>
+                        <button class="preview-scale-btn" data-scale="2">2×</button>
+                        <button class="preview-scale-btn" data-scale="4">4×</button>
+                    </div>
+                </div>
+
+                <!-- Canvas Info Bar -->
+                <div id="canvas-info">
+                    <button id="mode-toggle-btn" class="mode-toggle-btn">
+                        <span class="mode-badge-indicator">Editor</span>
+                    </button>
+                    <span id="zoom-level">100%</span>
+                    <span id="cursor-pos">0, 0</span>
+                    <span id="frame-size">0 x 0</span>
+                </div>
+            </section>
+
+            <!-- Resize Handle -->
+            <div id="panel-resize-handle" class="resize-handle vertical"></div>
+
+            <!-- Right Panel -->
+            <aside id="right-panel">
+                <div id="properties-panel">
+                    <!-- Pivot Editor -->
+                    <div id="pivot-editor-container"></div>
+
+                    <!-- Reference Mode Panel -->
+                    <div id="reference-mode-panel" class="hidden">
+                        <div class="panel-header">
+                            Reference Mode
+                            <span id="ref-mode-badge" class="mode-badge active">Active</span>
+                        </div>
+                        <div class="panel-section">
+                            <button id="btn-load-reference" class="btn btn-secondary full-width">
+                                Load Reference Image
+                            </button>
+                        </div>
+                        <div class="panel-section">
+                            <label class="panel-label">Opacity</label>
+                            <div class="slider-container">
+                                <input type="range" id="ref-opacity" class="slider" min="0" max="100" value="40">
+                                <span id="ref-opacity-value" class="slider-value">40%</span>
+                            </div>
+                        </div>
+                        <div class="panel-section">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="ref-mirror">
+                                Mirror (left ↔ right)
+                            </label>
+                            <p class="help-text">Căn chỉnh 1 bên → bên kia tự động ngược lại</p>
+                        </div>
+                        <div class="panel-section">
+                            <label class="panel-label">Reference Pivot (Alignment Anchor)</label>
+                            <div class="pivot-preset-btns">
+                                <button id="ref-pivot-center" class="btn btn-mini"
+                                    title="Center (0.5, 0.5)">Center</button>
+                                <button id="ref-pivot-bottom" class="btn btn-mini active"
+                                    title="Bottom-Center (0.5, 1.0)">Bottom</button>
+                                <button id="ref-pivot-top" class="btn btn-mini"
+                                    title="Top-Center (0.5, 0.0)">Top</button>
+                            </div>
+                            <div class="panel-row" style="margin-top: 8px;">
+                                <div class="input-group">
+                                    <span class="input-label">X</span>
+                                    <input type="number" id="ref-pivot-x" class="input-number" min="0" max="1"
+                                        step="0.1" value="0.5">
+                                </div>
+                                <div class="input-group">
+                                    <span class="input-label">Y</span>
+                                    <input type="number" id="ref-pivot-y" class="input-number" min="0" max="1"
+                                        step="0.1" value="1.0">
+                                </div>
+                            </div>
+                            <p class="help-text">Điểm neo để căn chỉnh các animation</p>
+                        </div>
+                        <div class="panel-section">
+                            <label class="panel-label">Scale X (Horizontal)</label>
+                            <div class="slider-container">
+                                <input type="range" id="ref-scale-x" class="slider" min="50" max="200" value="100">
+                                <span id="ref-scale-x-value" class="slider-value">100%</span>
+                            </div>
+                        </div>
+                        <div class="panel-section">
+                            <label class="panel-label">Scale Y (Vertical)</label>
+                            <div class="slider-container">
+                                <input type="range" id="ref-scale-y" class="slider" min="50" max="200" value="100">
+                                <span id="ref-scale-y-value" class="slider-value">100%</span>
+                            </div>
+                        </div>
+                        <div class="panel-section">
+                            <label class="panel-label">Reference Palette Match</label>
+                            <div class="color-adj-grid">
+                                <div class="color-adj-row">
+                                    <span class="color-adj-label">Reference Frame</span>
+                                    <select id="palette-reference-frame" class="input-select"></select>
+                                </div>
+                                <div class="color-adj-row">
+                                    <span class="color-adj-label">Palette Size</span>
+                                    <select id="palette-size" class="input-select">
+                                        <option value="16">16</option>
+                                        <option value="32" selected>32</option>
+                                        <option value="48">48</option>
+                                    </select>
+                                </div>
+                                <div class="color-adj-row">
+                                    <span class="color-adj-label">Color Match Strength</span>
+                                    <input type="range" id="palette-strength" class="slider color-slider" min="0" max="100" value="65">
+                                    <span id="palette-strength-value" class="slider-value">65%</span>
+                                </div>
+                                <div class="color-adj-row">
+                                    <span class="color-adj-label">Preserve Shading</span>
+                                    <input type="range" id="palette-preserve-shading" class="slider color-slider" min="0" max="100" value="75">
+                                    <span id="palette-preserve-shading-value" class="slider-value">75%</span>
+                                </div>
+                                <div class="color-adj-row">
+                                    <span class="color-adj-label">Alpha Threshold</span>
+                                    <input type="number" id="palette-alpha-threshold" class="input-number" min="0" max="255" value="10">
+                                </div>
+                                <div class="color-adj-row">
+                                    <span class="color-adj-label">Apply To</span>
+                                    <select id="palette-apply-to" class="input-select">
+                                        <option value="current">Current Frame</option>
+                                        <option value="selected">Selected Frames</option>
+                                        <option value="all" selected>All Frames</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <label class="checkbox-label palette-protect-row">
+                                <input type="checkbox" id="palette-protect-transparent" checked disabled>
+                                Protect Transparent Pixels
+                            </label>
+                            <div class="palette-preview-grid">
+                                <div class="palette-preview-cell">
+                                    <span class="palette-preview-label">Before</span>
+                                    <canvas id="palette-preview-before"></canvas>
+                                </div>
+                                <div class="palette-preview-cell">
+                                    <span class="palette-preview-label">After</span>
+                                    <canvas id="palette-preview-after"></canvas>
+                                </div>
+                            </div>
+                            <div class="palette-animation-preview">
+                                <canvas id="palette-animation-preview"></canvas>
+                            </div>
+                            <div style="display:flex;gap:4px;margin-top:6px">
+                                <button id="btn-preview-palette-match" class="btn btn-secondary btn-sm" style="flex:1">Preview</button>
+                                <button id="btn-play-palette-preview" class="btn btn-secondary btn-sm" style="flex:1">Play Preview</button>
+                                <button id="btn-apply-palette-match" class="btn btn-primary btn-sm" style="flex:1">Apply</button>
+                            </div>
+                        </div>
+                        <div class="panel-section">
+                            <label class="panel-label">Frame Offset</label>
+                            <div class="panel-row">
+                                <div class="input-group">
+                                    <span class="input-label">X</span>
+                                    <input type="number" id="ref-offset-x" class="input-number" value="0">
+                                </div>
+                                <div class="input-group">
+                                    <span class="input-label">Y</span>
+                                    <input type="number" id="ref-offset-y" class="input-number" value="0">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="panel-section">
+                            <button id="btn-reset-scale-offset" class="btn btn-secondary full-width">
+                                ↺ Reset Scale & Offset
+                            </button>
+                        </div>
+                        <div class="panel-section">
+                            <button id="btn-exit-reference" class="btn btn-warning full-width">
+                                Exit Reference Mode
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Animation Properties -->
+                    <div id="animation-properties">
+                        <div class="panel-header">Animation</div>
+                        <div class="panel-section">
+                            <label class="panel-label">Name</label>
+                            <input type="text" id="anim-name" class="input-text" value="untitled">
+                        </div>
+                        <div class="panel-section">
+                            <div class="panel-row">
+                                <div class="input-group">
+                                    <span class="input-label">FPS</span>
+                                    <input type="number" id="anim-fps" class="input-number" min="1" max="60" value="12">
+                                </div>
+                                <div class="input-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="anim-loop" checked>
+                                        Loop
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Export Section -->
+                    <div id="export-section">
+                        <div class="panel-header">Export</div>
+                        <div class="panel-section">
+                            <label class="panel-label">Normalized Size</label>
+                            <div class="panel-row">
+                                <div class="input-group">
+                                    <span class="input-label">W</span>
+                                    <input type="number" id="export-width" class="input-number" min="1" value="64">
+                                </div>
+                                <div class="input-group">
+                                    <span class="input-label">H</span>
+                                    <input type="number" id="export-height" class="input-number" min="1" value="64">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="panel-section">
+                            <button id="btn-export" class="btn btn-primary full-width">
+                                Export...
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Timeline -->
+        <footer id="timeline-container"></footer>
+
+        <!-- Modals -->
+        <div id="modal-overlay" class="hidden">
+            <div id="modal-container">
+                <!-- Dynamic modal content -->
+            </div>
+        </div>
+
+        <!-- Frame Context Menu -->
+        <div id="frame-context-menu" class="context-menu hidden">
+            <div class="context-menu-item" data-action="export-slice">
+                <span class="context-menu-icon">⬇</span>
+                Export Slice
+            </div>
+            <div class="context-menu-item" data-action="duplicate">
+                <span class="context-menu-icon">⧉</span>
+                Duplicate Frame
+            </div>
+            <div class="context-menu-separator"></div>
+            <div class="context-menu-item" data-action="delete">
+                <span class="context-menu-icon">✕</span>
+                Delete Frame
+            </div>
+        </div>
+
+        <!-- Slice Dialog -->
+        <div id="slice-dialog" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">Slice Sprite Sheet</div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Cell Width</label>
+                        <input type="number" id="slice-width" value="64" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Cell Height</label>
+                        <input type="number" id="slice-height" value="64" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Columns (auto)</label>
+                        <input type="number" id="slice-cols" value="0" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Rows (auto)</label>
+                        <input type="number" id="slice-rows" value="0" min="0">
+                    </div>
+                    <div class="slice-preview">
+                        <canvas id="slice-preview-canvas"></canvas>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="slice-cancel" class="btn btn-secondary">Cancel</button>
+                    <button id="slice-confirm" class="btn btn-primary">Slice</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Auto-Scale Detection Dialog -->
+        <div id="auto-scale-dialog" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">🔍 Auto-Scale Detected</div>
+                <div class="modal-body">
+                    <p>Reference and Frame 0 appear to be the <strong>same image</strong> with different sizes.</p>
+                    <div class="auto-scale-sizes">
+                        <div class="size-box">
+                            <span class="size-label">Reference</span>
+                            <span id="auto-scale-ref-size" class="size-value">512 × 512</span>
+                        </div>
+                        <span class="size-arrow">→</span>
+                        <div class="size-box">
+                            <span class="size-label">Frame 0</span>
+                            <span id="auto-scale-frame-size" class="size-value">256 × 256</span>
+                        </div>
+                    </div>
+                    <p class="auto-scale-info">Calculated scale: <strong id="auto-scale-factor">50%</strong></p>
+                    <p>Apply auto-scale to match reference size?</p>
+                </div>
+                <div class="modal-footer">
+                    <button id="auto-scale-no" class="btn btn-secondary">✗ No, Keep Manual</button>
+                    <button id="auto-scale-yes" class="btn btn-primary">✓ Yes, Auto-scale</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export Choice Dialog -->
+        <div id="export-dialog" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">Export</div>
+                <div class="modal-body">
+                    <p class="export-dialog-desc">Chọn kiểu export:</p>
+                    <div class="export-choices">
+                        <button id="export-meta-btn" class="export-choice-btn">
+                            <span class="export-choice-icon material-symbols-rounded">description</span>
+                            <span class="export-choice-title">Meta JSON</span>
+                            <span class="export-choice-desc">Export metadata file (scale, pivot, offset)</span>
+                        </button>
+                        <button id="export-spritesheet-btn" class="export-choice-btn">
+                            <span class="export-choice-icon material-symbols-rounded">image</span>
+                            <span class="export-choice-title">Scaled Spritesheet</span>
+                            <span class="export-choice-desc">Export spritesheet mới đã scale + palette match</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="export-cancel" class="btn btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Spritesheet Import Dialog (Player Mode) -->
+        <div id="spritesheet-import-dialog" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">Import Spritesheet</div>
+                <div class="modal-body">
+                    <p class="export-dialog-desc">Nhập thông tin grid của spritesheet:</p>
+                    <div class="form-group">
+                        <label>Columns</label>
+                        <input type="number" id="ss-import-cols" value="8" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>Rows</label>
+                        <input type="number" id="ss-import-rows" value="1" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label>FPS</label>
+                        <input type="number" id="ss-import-fps" value="12" min="1" max="60">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="ss-import-cancel" class="btn btn-secondary">Cancel</button>
+                    <button id="ss-import-confirm" class="btn btn-primary">Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Use require() to load CommonJS modules in Electron
+        require('./index.js');
+    </script>
+</body>
+
+</html>
+

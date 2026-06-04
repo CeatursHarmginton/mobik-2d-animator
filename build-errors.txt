@@ -1,0 +1,7 @@
+src/core/index.ts(12,1): error TS2308: Module './models' has already exported a member named 'GridSliceConfig'. Consider explicitly re-exporting to resolve the ambiguity.
+src/core/index.ts(12,1): error TS2308: Module './models' has already exported a member named 'ManualSliceRegion'. Consider explicitly re-exporting to resolve the ambiguity.
+src/editor/components/PivotEditor.ts(17,13): error TS2564: Property '_element' has no initializer and is not definitely assigned in the constructor.
+src/editor/components/Timeline.ts(23,13): error TS2564: Property '_element' has no initializer and is not definitely assigned in the constructor.
+src/editor/components/Timeline.ts(24,13): error TS2564: Property '_frameList' has no initializer and is not definitely assigned in the constructor.
+src/editor/components/Timeline.ts(25,13): error TS2564: Property '_scrollContainer' has no initializer and is not definitely assigned in the constructor.
+src/editor/components/Toolbar.ts(31,13): error TS2564: Property '_element' has no initializer and is not definitely assigned in the constructor.
