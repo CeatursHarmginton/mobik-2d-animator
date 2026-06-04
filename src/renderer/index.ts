@@ -1439,6 +1439,9 @@ class MobikEditor {
         const targetIndices = this.getPaletteMatchTargetIndices();
         if (targetIndices.length === 0) return;
 
+        let changedFrames = 0;
+        let changedPixels = 0;
+
         for (const index of targetIndices) {
             const frame = this._project.animation.getFrame(index);
             if (!frame) continue;
@@ -1446,6 +1449,11 @@ class MobikEditor {
             if (!sourceData) continue;
 
             const matched = applyPaletteMatch(sourceData, palette, this._paletteMatchOptions);
+            const diffPixels = this.countChangedOpaquePixels(sourceData, matched);
+            if (diffPixels > 0) {
+                changedFrames++;
+                changedPixels += diffPixels;
+            }
             await this.replaceFrameImageWithImageData(frame, matched);
         }
 
@@ -1455,8 +1463,26 @@ class MobikEditor {
         this.updatePaletteMatchPreview();
         this._project.markDirty();
         globalEvents.emit(EditorEvents.ANIMATION_UPDATED);
+
+        if (changedPixels === 0) {
+            alert('Reference Palette Match ran, but no visible pixels changed. Try lowering Alpha Threshold or increasing Color Match Strength.');
+        } else {
+            alert(`Reference Palette Match applied to ${changedFrames}/${targetIndices.length} frame(s). Changed ${changedPixels.toLocaleString()} visible pixels.`);
+        }
     }
 
+    private countChangedOpaquePixels(before: ImageData, after: ImageData): number {
+        const threshold = this._paletteMatchOptions.alphaThreshold;
+        let count = 0;
+        for (let i = 0; i < before.data.length; i += 4) {
+            if (before.data[i + 3] <= threshold) continue;
+            const dr = Math.abs(before.data[i] - after.data[i]);
+            const dg = Math.abs(before.data[i + 1] - after.data[i + 1]);
+            const db = Math.abs(before.data[i + 2] - after.data[i + 2]);
+            if (dr + dg + db >= 3) count++;
+        }
+        return count;
+    }
     private async replaceFrameImageWithImageData(frame: Frame, imageData: ImageData): Promise<void> {
         const canvas = SpritesheetExporter.imageDataToCanvas(imageData);
         const dataUrl = canvas.toDataURL('image/png');
@@ -2715,6 +2741,8 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('[Mobik] Failed to initialize editor:', error);
     }
 });
+
+
 
 
 

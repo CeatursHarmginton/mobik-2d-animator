@@ -78,7 +78,7 @@ export function applyPaletteMatch(
         if (alpha <= alphaThreshold) continue;
 
         const oldLab = rgbToLab(data[i], data[i + 1], data[i + 2]);
-        const nearest = findNearestLab(oldLab, colors);
+        const nearest = findNearestPaletteLab(oldLab, colors);
         if (!nearest) continue;
 
         const matched: LabColor = {
@@ -198,6 +198,24 @@ function initializeCenters(pixels: LabColor[], k: number): LabColor[] {
     return centers;
 }
 
+function findNearestPaletteLab(color: LabColor, palette: LabColor[]): LabColor | null {
+    let bestIndex = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < palette.length; i++) {
+        const candidate = palette[i];
+        const dl = (color.l - candidate.l) * 0.25;
+        const da = color.a - candidate.a;
+        const db = color.b - candidate.b;
+        const distance = dl * dl + da * da + db * db;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex >= 0 ? palette[bestIndex] : null;
+}
 function findNearestLab(color: LabColor, palette: LabColor[]): LabColor | null {
     const index = findNearestIndex(color, palette);
     return index >= 0 ? palette[index] : null;
@@ -277,3 +295,4 @@ function clampByte(value: number): number {
     if (!Number.isFinite(value)) return 0;
     return Math.max(0, Math.min(255, Math.round(value)));
 }
+
