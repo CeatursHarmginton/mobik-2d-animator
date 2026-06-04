@@ -2057,14 +2057,25 @@ class MobikEditor {
                 return;
             }
 
-            // Generate scaled spritesheet with all color adjustments
+            // Generate scaled spritesheet with Reference Palette Match baked in.
+            const paletteMatch = this.getPaletteMatchExportOptions();
             const spritesheetResult = SpritesheetExporter.generateScaledSpritesheet(
                 this._project,
-                { ...this._colorAdj, paletteMatch: this.getPaletteMatchExportOptions() }
+                { ...this._colorAdj, paletteMatch }
             );
 
             if (!spritesheetResult) {
                 alert('Failed to generate spritesheet. Make sure frames are loaded.');
+                return;
+            }
+
+            if (!spritesheetResult.paletteMatchApplied) {
+                alert('Reference Palette Match was not applied. Load a reference image in Reference Mode or choose a valid reference frame before exporting.');
+                return;
+            }
+
+            if ((spritesheetResult.paletteMatchChangedPixels ?? 0) === 0) {
+                alert('Reference Palette Match exported 0 changed pixels. Increase Color Match Strength, lower Preserve Shading, or make sure the reference image colors differ from the sprite.');
                 return;
             }
 
@@ -2087,15 +2098,19 @@ class MobikEditor {
                 encoding: 'base64'
             });
 
+            const companionMetaPath = result.filePath.replace(/\.[^\.]+$/, '.json');
+            const companionMeta = this.buildScaledSpritesheetMeta(result.filePath, spritesheetResult);
+            await ipcRenderer.invoke(IPC_CHANNELS.WRITE_FILE, companionMetaPath, companionMeta);
+
             // Build color info summary
-            const adj = this._colorAdj;
-            const colorInfo = [
-                adj.brightness !== 0 ? `Brightness: ${adj.brightness}` : '',
-                adj.contrast !== 0 ? `Contrast: ${adj.contrast}` : '',
-                adj.saturation !== 0 ? `Saturation: ${adj.saturation}` : '',
-                adj.hue !== 0 ? `Hue: ${adj.hue}°` : '',
-                adj.invert !== 0 ? `Invert: ${adj.invert}%` : '',
-            ].filter(Boolean).join(', ') || 'None';
+            const referenceLabel = this._paletteMatchOptions.referenceSource === 'loaded-reference'
+                ? 'loaded reference image'
+                : `sprite frame ${this._paletteMatchOptions.referenceIndex + 1}`;
+            const colorInfo = `Reference Palette Match: ${referenceLabel}, ` +
+                `${this._paletteMatchOptions.paletteSize} colors, ` +
+                `strength ${Math.round(this._paletteMatchOptions.strength * 100)}%, ` +
+                `shading ${Math.round(this._paletteMatchOptions.preserveShading * 100)}%, ` +
+                `${(spritesheetResult.paletteMatchChangedPixels ?? 0).toLocaleString()} pixels changed`;
 
             const fileSize = Math.ceil(base64Data.length * 0.75);
             alert(
@@ -2103,6 +2118,7 @@ class MobikEditor {
                 `Size: ${spritesheetResult.frameWidth}×${spritesheetResult.frameHeight} per frame\n` +
                 `Layout: ${spritesheetResult.columns}×${spritesheetResult.rows} (${spritesheetResult.totalFrames} frames)\n` +
                 `File: ~${round(fileSize / 1024, 1)} KB\n` +
+                `Meta: ${path.basename(companionMetaPath)}\n` +
                 `Color: ${colorInfo}`
             );
 
@@ -2110,6 +2126,42 @@ class MobikEditor {
             console.error('Failed to export scaled spritesheet:', error);
             alert(`Failed to export: ${error}`);
         }
+    }
+
+    private buildScaledSpritesheetMeta(spritesheetPath: string, spritesheetResult: { frameWidth: number; frameHeight: number; columns: number; rows: number; totalFrames: number }): string {
+        const filename = path.basename(spritesheetPath);
+        const frames = this._project.animation.frames.map((frame, index) => {
+            const col = index % spritesheetResult.columns;
+            const row = Math.floor(index / spritesheetResult.columns);
+            return {
+                src: filename,
+                rect: [
+                    col * spritesheetResult.frameWidth,
+                    row * spritesheetResult.frameHeight,
+                    spritesheetResult.frameWidth,
+                    spritesheetResult.frameHeight
+                ],
+                pivot: [frame.pivot.x, frame.pivot.y],
+                offset: [frame.offset.x, frame.offset.y],
+                scale: [1, 1],
+                dur: frame.duration
+            };
+        });
+
+        const meta = {
+            version: '1.1',
+            spriteSheet: filename,
+            animation: {
+                name: this._project.animation.name,
+                fps: this._project.animation.defaultFPS,
+                loop: this._project.animation.loop,
+                frameCount: spritesheetResult.totalFrames,
+                frames,
+                ...(this._project.animation.targetSize && { targetSize: this._project.animation.targetSize })
+            }
+        };
+
+        return JSON.stringify(meta, null, 2);
     }
 
     // ========================================================================
@@ -2741,6 +2793,11 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('[Mobik] Failed to initialize editor:', error);
     }
 });
+
+
+
+
+
 
 
 

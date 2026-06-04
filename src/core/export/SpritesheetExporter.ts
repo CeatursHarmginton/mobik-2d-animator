@@ -38,6 +38,8 @@ export interface SpritesheetExportResult {
     columns: number;
     rows: number;
     totalFrames: number;
+    paletteMatchApplied?: boolean;
+    paletteMatchChangedPixels?: number;
 }
 
 export class SpritesheetExporter {
@@ -113,6 +115,7 @@ export class SpritesheetExporter {
         const paletteMatch = options.paletteMatch;
         const usePaletteMatch = Boolean(paletteMatch?.enabled);
         let referencePalette: ReferencePalette | null = null;
+        let paletteMatchChangedPixels = 0;
         const targetIndices = new Set(paletteMatch?.targetIndices ?? frames.map((_, index) => index));
 
         if (usePaletteMatch && paletteMatch) {
@@ -143,6 +146,7 @@ export class SpritesheetExporter {
                 const frameData = this.getFrameImageData(frame);
                 if (!frameData) continue;
                 const matched = applyPaletteMatch(frameData, referencePalette, paletteMatch);
+                paletteMatchChangedPixels += this.countChangedOpaquePixels(frameData, matched, paletteMatch.alphaThreshold ?? 10);
                 const frameCanvas = this.imageDataToCanvas(matched);
                 ctx.drawImage(frameCanvas, 0, 0, frame.sourceRect.w, frame.sourceRect.h, cellX, cellY, scaledW, scaledH);
             } else {
@@ -156,9 +160,29 @@ export class SpritesheetExporter {
             }
         }
 
-        return { canvas, frameWidth: maxScaledW, frameHeight: maxScaledH, columns, rows, totalFrames };
+        return {
+            canvas,
+            frameWidth: maxScaledW,
+            frameHeight: maxScaledH,
+            columns,
+            rows,
+            totalFrames,
+            paletteMatchApplied: usePaletteMatch && Boolean(referencePalette),
+            paletteMatchChangedPixels
+        };
     }
 
+    private static countChangedOpaquePixels(before: ImageData, after: ImageData, alphaThreshold: number): number {
+        let count = 0;
+        for (let i = 0; i < before.data.length; i += 4) {
+            if (before.data[i + 3] <= alphaThreshold) continue;
+            const dr = Math.abs(before.data[i] - after.data[i]);
+            const dg = Math.abs(before.data[i + 1] - after.data[i + 1]);
+            const db = Math.abs(before.data[i + 2] - after.data[i + 2]);
+            if (dr + dg + db >= 3) count++;
+        }
+        return count;
+    }
     static getFrameImageData(frame: Frame): ImageData | null {
         if (!frame.image?.element || frame.sourceRect.w <= 0 || frame.sourceRect.h <= 0) return null;
         const canvas = document.createElement('canvas');
@@ -200,4 +224,7 @@ export class SpritesheetExporter {
         return `${name}_scaled.png`;
     }
 }
+
+
+
 
