@@ -21,6 +21,7 @@ export class MetaParser {
      * Also supports compact grid format (v1.1) where frames are auto-generated
      */
     static parseObject(meta: RuntimeMeta): AnimationData {
+        meta = this.normalizeExternalMeta(meta);
         this.validate(meta);
 
         // Support both runtime format (fps) and project format (defaultFPS)
@@ -141,6 +142,54 @@ export class MetaParser {
             loop: meta.animation.loop,
             totalDuration: currentTime,
             frames
+        };
+    }
+
+    /**
+     * Normalize common external spritesheet JSON formats into Mobik runtime meta.
+     * Supports TexturePacker/Phaser-style JSON used by Ludo exports.
+     */
+    private static normalizeExternalMeta(meta: any): RuntimeMeta {
+        if (meta?.animation || !meta?.frames || !meta?.meta?.image) {
+            return meta as RuntimeMeta;
+        }
+
+        const frameEntries: Array<[string, any]> = Array.isArray(meta.frames)
+            ? meta.frames.map((frame: any, index: number) => [String(frame.filename ?? index), frame] as [string, any])
+            : Object.entries(meta.frames) as Array<[string, any]>;
+
+        const sortedEntries = frameEntries.sort(([leftKey], [rightKey]) => {
+            const leftNum = parseInt(String(leftKey).match(/\d+/)?.[0] ?? '0', 10);
+            const rightNum = parseInt(String(rightKey).match(/\d+/)?.[0] ?? '0', 10);
+            return leftNum - rightNum || String(leftKey).localeCompare(String(rightKey));
+        });
+
+        const firstDuration = Math.max(1, Number((sortedEntries[0]?.[1] as any)?.duration) || 100);
+        const fps = 1000 / firstDuration;
+        const imageName = String(meta.meta.image);
+        const animationName = imageName.replace(/\.[^/.]+$/, '') || 'animation';
+
+        return {
+            version: '1.1',
+            spriteSheet: imageName,
+            animation: {
+                name: animationName,
+                fps,
+                loop: true,
+                frames: sortedEntries.map(([, rawFrame]: [string, any]) => {
+                    const rect = rawFrame.frame || rawFrame;
+                    const spriteSourceSize = rawFrame.spriteSourceSize || { x: 0, y: 0 };
+                    const durationMs = Math.max(1, Number(rawFrame.duration) || firstDuration);
+                    return {
+                        src: imageName,
+                        rect: [Number(rect.x) || 0, Number(rect.y) || 0, Number(rect.w) || 0, Number(rect.h) || 0],
+                        pivot: [0.5, 1.0],
+                        offset: [Number(spriteSourceSize.x) || 0, Number(spriteSourceSize.y) || 0],
+                        scale: [1, 1],
+                        dur: durationMs / firstDuration
+                    };
+                })
+            }
         };
     }
 

@@ -66,6 +66,7 @@ export class Canvas extends EventEmitter {
     private _palettePreviewImage: HTMLCanvasElement | null = null;
 
     private _isPanning: boolean = false;
+    private _isDraggingFrame: boolean = false;
     private _isDraggingPivot: boolean = false;
     private _lastMousePos: Point = { x: 0, y: 0 };
 
@@ -610,8 +611,7 @@ export class Canvas extends EventEmitter {
 
     private drawPivot(frame: Frame): void {
         const ctx = this._ctx;
-        const pivotPx = frame.getPivotPixels();
-        const screenPivot = this.worldToScreen(pivotPx.x, pivotPx.y);
+        const screenPivot = this.getPivotScreenPosition(frame);
 
         ctx.save();
         ctx.strokeStyle = PIVOT_COLOR;
@@ -633,6 +633,40 @@ export class Canvas extends EventEmitter {
         ctx.fill();
 
         ctx.restore();
+    }
+
+    private getFrameScreenRect(frame: Frame): { x: number; y: number; w: number; h: number } {
+        const zoom = this._viewport.zoom;
+        const basePos = this.worldToScreen(0, 0);
+        return {
+            x: basePos.x + this._frameOffset.x * zoom,
+            y: basePos.y + this._frameOffset.y * zoom,
+            w: frame.sourceRect.w * zoom * this._frameScaleX,
+            h: frame.sourceRect.h * zoom * this._frameScaleY
+        };
+    }
+
+    private getPivotScreenPosition(frame: Frame): Point {
+        const rect = this.getFrameScreenRect(frame);
+        return {
+            x: rect.x + frame.pivot.x * rect.w,
+            y: rect.y + frame.pivot.y * rect.h
+        };
+    }
+
+    private setPivotFromScreenPosition(frame: Frame, screenX: number, screenY: number): void {
+        const rect = this.getFrameScreenRect(frame);
+        frame.pivot = {
+            x: clamp((screenX - rect.x) / Math.max(1, rect.w), 0, 1),
+            y: clamp((screenY - rect.y) / Math.max(1, rect.h), 0, 1)
+        };
+    }
+
+    private isPointInCurrentFrame(pos: Point): boolean {
+        if (!this._currentFrame) return false;
+        const rect = this.getFrameScreenRect(this._currentFrame);
+        return pos.x >= rect.x && pos.x <= rect.x + rect.w &&
+            pos.y >= rect.y && pos.y <= rect.y + rect.h;
     }
 
     private drawBoundingBox(frame: Frame): void {
@@ -687,7 +721,13 @@ export class Canvas extends EventEmitter {
         const pos = getMousePosition(e, this._canvas);
         this._lastMousePos = pos;
 
-        // Middle click or right click for panning
+        // Right click in Reference Mode moves the frame image; middle click pans the canvas.
+        if (e.button === 2 && this._referenceModeEnabled && this._currentFrame && this.isPointInCurrentFrame(pos)) {
+            this._isDraggingFrame = true;
+            this._canvas.style.cursor = 'move';
+            return;
+        }
+
         if (e.button === 1 || e.button === 2) {
             this._isPanning = true;
             this._canvas.style.cursor = 'grabbing';
@@ -712,8 +752,7 @@ export class Canvas extends EventEmitter {
 
         // Left click - check for pivot drag
         if (e.button === 0 && this._currentFrame && this._showPivot) {
-            const pivotPx = this._currentFrame.getPivotPixels();
-            const screenPivot = this.worldToScreen(pivotPx.x, pivotPx.y);
+            const screenPivot = this.getPivotScreenPosition(this._currentFrame);
             const dist = Math.sqrt(
                 Math.pow(pos.x - screenPivot.x, 2) +
                 Math.pow(pos.y - screenPivot.y, 2)
@@ -741,6 +780,17 @@ export class Canvas extends EventEmitter {
         if (this._isPanning) {
             this._viewport.panX += dx;
             this._viewport.panY += dy;
+            this.render();
+            return;
+        }
+
+        if (this._isDraggingFrame && this._currentFrame) {
+            const zoom = this._viewport.zoom || 1;
+            this._frameOffset = {
+                x: this._frameOffset.x + dx / zoom,
+                y: this._frameOffset.y + dy / zoom
+            };
+            this._currentFrame.offset = { ...this._frameOffset };
             this.render();
             return;
         }
@@ -819,8 +869,7 @@ export class Canvas extends EventEmitter {
         }
 
         if (this._isDraggingPivot && this._currentFrame) {
-            const worldPos = this.screenToWorld(pos.x, pos.y);
-            this._currentFrame.setPivotFromPixels(worldPos.x, worldPos.y);
+            this.setPivotFromScreenPosition(this._currentFrame, pos.x, pos.y);
             this.render();
             this.emit(EditorEvents.PIVOT_CHANGED, this._currentFrame.pivot);
             return;
@@ -837,8 +886,7 @@ export class Canvas extends EventEmitter {
 
         // Update cursor for pivot hover
         if (this._currentFrame && this._showPivot) {
-            const pivotPx = this._currentFrame.getPivotPixels();
-            const screenPivot = this.worldToScreen(pivotPx.x, pivotPx.y);
+            const screenPivot = this.getPivotScreenPosition(this._currentFrame);
             const dist = Math.sqrt(
                 Math.pow(pos.x - screenPivot.x, 2) +
                 Math.pow(pos.y - screenPivot.y, 2)
@@ -850,6 +898,19 @@ export class Canvas extends EventEmitter {
     private onMouseUp(): void {
         if (this._isDraggingPivot) {
             this.emit(EditorEvents.PIVOT_DRAG_END);
+        }
+
+        // Persist moved offset to frame when right-drag ends
+        if (this._isDraggingFrame && this._currentFrame) {
+            this._currentFrame.offset = {
+                x: this._frameOffset.x,
+                y: this._frameOffset.y
+            };
+            this.emit(EditorEvents.FRAME_SCALE_CHANGED, {
+                frameIndex: this._currentFrame.index,
+                scale: { ...this._currentFrame.scale },
+                offset: { ...this._currentFrame.offset }
+            });
         }
 
         // Persist scale AND offset to frame when resize ends
@@ -870,6 +931,7 @@ export class Canvas extends EventEmitter {
         }
 
         this._isPanning = false;
+        this._isDraggingFrame = false;
         this._isDraggingPivot = false;
         this._isResizingFrame = false;
         this._activeHandle = '';

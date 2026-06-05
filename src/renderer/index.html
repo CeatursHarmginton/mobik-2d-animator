@@ -142,6 +142,13 @@
                             <label class="panel-label">Reference Palette Match</label>
                             <div class="color-adj-grid">
                                 <div class="color-adj-row">
+                                    <span class="color-adj-label">Enabled</span>
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="palette-match-enabled">
+                                        Preview + export palette match
+                                    </label>
+                                </div>
+                                <div class="color-adj-row">
                                     <span class="color-adj-label">Reference Frame</span>
                                     <select id="palette-reference-frame" class="input-select"></select>
                                 </div>
@@ -374,7 +381,12 @@
                         <button id="export-spritesheet-btn" class="export-choice-btn">
                             <span class="export-choice-icon material-symbols-rounded">image</span>
                             <span class="export-choice-title">Scaled Spritesheet</span>
-                            <span class="export-choice-desc">Export spritesheet mới đã scale + palette match</span>
+                            <span class="export-choice-desc">Export spritesheet moi da scale + palette match</span>
+                        </button>
+                        <button id="export-bundle-btn" class="export-choice-btn">
+                            <span class="export-choice-icon material-symbols-rounded">folder_zip</span>
+                            <span class="export-choice-title">Image + Meta JSON</span>
+                            <span class="export-choice-desc">Export PNG va meta.json cung thu muc</span>
                         </button>
                     </div>
                 </div>

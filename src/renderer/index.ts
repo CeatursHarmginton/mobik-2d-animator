@@ -50,7 +50,7 @@ class MobikEditor {
     private _refPivot: { x: number; y: number } = { x: 0.5, y: 1.0 }; // Default: bottom-center
     private _refImage: HTMLImageElement | null = null;
     private _colorAdj = { brightness: 0, contrast: 0, saturation: 0, hue: 0, invert: 0 };
-    private _paletteMatchOptions = { referenceSource: 'frame' as 'frame' | 'loaded-reference', referenceIndex: 0, paletteSize: 32 as PaletteSize, strength: 0.65, preserveShading: 0.75, alphaThreshold: 10, applyTo: 'all' as 'current' | 'selected' | 'all', protectTransparent: true };
+    private _paletteMatchOptions = { enabled: false, referenceSource: 'frame' as 'frame' | 'loaded-reference', referenceIndex: 0, paletteSize: 32 as PaletteSize, strength: 0.65, preserveShading: 0.75, alphaThreshold: 10, applyTo: 'all' as 'current' | 'selected' | 'all', protectTransparent: true };
     private _paletteCache: { key: string; palette: ReferencePalette } | null = null;
     private _palettePreviewAnimationTimer: number | null = null;
     private _palettePreviewFrameIndex: number = 0;
@@ -173,6 +173,13 @@ class MobikEditor {
             if (scaleXValue) scaleXValue.textContent = `${Math.round(scaleX * 100)}%`;
             if (scaleYSlider) scaleYSlider.value = String(Math.round(scaleY * 100));
             if (scaleYValue) scaleYValue.textContent = `${Math.round(scaleY * 100)}%`;
+
+            const offsetXInput = document.getElementById('ref-offset-x') as HTMLInputElement | null;
+            const offsetYInput = document.getElementById('ref-offset-y') as HTMLInputElement | null;
+            if (data?.offset) {
+                if (offsetXInput) offsetXInput.value = String(Math.round(data.offset.x));
+                if (offsetYInput) offsetYInput.value = String(Math.round(data.offset.y));
+            }
 
             // Only apply to ALL frames when resize ENDS (has frameIndex)
             // This prevents applying wrong values when switching frames
@@ -603,7 +610,7 @@ class MobikEditor {
                 this.saveProject();
                 break;
             case 'export':
-                this.exportMeta();
+                this.showExportDialog();
                 break;
             case 'play-pause':
                 if (this._isPlayerMode && this._playerController) {
@@ -1202,6 +1209,7 @@ class MobikEditor {
     private setupPaletteMatchListeners(): void {
         this.refreshPaletteReferencePicker();
 
+        const enabled = document.getElementById('palette-match-enabled') as HTMLInputElement;
         const referenceSelect = document.getElementById('palette-reference-frame') as HTMLSelectElement;
         const paletteSize = document.getElementById('palette-size') as HTMLSelectElement;
         const strength = document.getElementById('palette-strength') as HTMLInputElement;
@@ -1217,6 +1225,10 @@ class MobikEditor {
             this.updatePaletteMatchPreview();
         };
 
+        enabled?.addEventListener('change', () => {
+            this.readPaletteMatchOptionsFromUI();
+            this.updatePaletteMatchPreview();
+        });
         referenceSelect?.addEventListener('change', invalidateAndPreview);
         paletteSize?.addEventListener('change', invalidateAndPreview);
         alpha?.addEventListener('change', invalidateAndPreview);
@@ -1282,6 +1294,7 @@ class MobikEditor {
     }
 
     private readPaletteMatchOptionsFromUI(): void {
+        const enabled = document.getElementById('palette-match-enabled') as HTMLInputElement | null;
         const referenceSelect = document.getElementById('palette-reference-frame') as HTMLSelectElement | null;
         const paletteSize = document.getElementById('palette-size') as HTMLSelectElement | null;
         const strength = document.getElementById('palette-strength') as HTMLInputElement | null;
@@ -1293,6 +1306,7 @@ class MobikEditor {
         const referenceSource = referenceValue === 'loaded-reference' ? 'loaded-reference' : 'frame';
 
         this._paletteMatchOptions = {
+            enabled: Boolean(enabled?.checked),
             referenceSource,
             referenceIndex: referenceSource === 'frame'
                 ? Math.max(0, parseInt(referenceValue, 10) || 0)
@@ -1374,7 +1388,8 @@ class MobikEditor {
         const before = SpritesheetExporter.getFrameImageData(frame);
         if (!before) return;
 
-        const palette = this.getReferencePalette();
+        this.readPaletteMatchOptionsFromUI();
+        const palette = this._paletteMatchOptions.enabled ? this.getReferencePalette() : null;
         const after = palette ? applyPaletteMatch(before, palette, this._paletteMatchOptions) : before;
 
         if (frameIndex === this._timeline.selectedIndex) {
@@ -1511,7 +1526,7 @@ class MobikEditor {
     private getPaletteMatchExportOptions() {
         this.readPaletteMatchOptionsFromUI();
         return {
-            enabled: this._project.animation.frameCount > 0,
+            enabled: this._paletteMatchOptions.enabled && this._project.animation.frameCount > 0,
             referenceIndex: this._paletteMatchOptions.referenceIndex,
             referenceImageData: this._paletteMatchOptions.referenceSource === 'loaded-reference'
                 ? this.getLoadedReferenceImageData() ?? undefined
@@ -1996,6 +2011,7 @@ class MobikEditor {
         // Setup button handlers (remove old listeners by cloning)
         const metaBtn = document.getElementById('export-meta-btn');
         const spritesheetBtn = document.getElementById('export-spritesheet-btn');
+        const bundleBtn = document.getElementById('export-bundle-btn');
         const cancelBtn = document.getElementById('export-cancel');
 
         const closeDialog = () => dialog?.classList.add('hidden');
@@ -2015,7 +2031,16 @@ class MobikEditor {
             spritesheetBtn.parentNode?.replaceChild(newSpritesheetBtn, spritesheetBtn);
             newSpritesheetBtn.addEventListener('click', () => {
                 closeDialog();
-                this.exportScaledSpritesheet();
+                this.exportScaledSpritesheet(false);
+            });
+        }
+
+        if (bundleBtn) {
+            const newBundleBtn = bundleBtn.cloneNode(true) as HTMLElement;
+            bundleBtn.parentNode?.replaceChild(newBundleBtn, bundleBtn);
+            newBundleBtn.addEventListener('click', () => {
+                closeDialog();
+                this.exportScaledSpritesheet(true);
             });
         }
 
@@ -2053,7 +2078,7 @@ class MobikEditor {
         }
     }
 
-    private async exportScaledSpritesheet(): Promise<void> {
+    private async exportScaledSpritesheet(writeCompanionMeta: boolean = false): Promise<void> {
         try {
             // Validate
             const errors = MetaExporter.validate(this._project);
@@ -2075,12 +2100,12 @@ class MobikEditor {
                 return;
             }
 
-            if (!spritesheetResult.paletteMatchApplied) {
-                alert('Reference Palette Match was not applied. Load a reference image in Reference Mode or choose a valid reference frame before exporting.');
+            if (paletteMatch.enabled && !spritesheetResult.paletteMatchApplied) {
+                alert('Reference Palette Match was enabled but could not be applied. Load a reference image in Reference Mode or choose a valid reference frame before exporting.');
                 return;
             }
 
-            if ((spritesheetResult.paletteMatchChangedPixels ?? 0) === 0) {
+            if (paletteMatch.enabled && (spritesheetResult.paletteMatchChangedPixels ?? 0) === 0) {
                 alert('Reference Palette Match exported 0 changed pixels. Increase Color Match Strength, lower Preserve Shading, or make sure the reference image colors differ from the sprite.');
                 return;
             }
@@ -2104,19 +2129,24 @@ class MobikEditor {
                 encoding: 'base64'
             });
 
-            const companionMetaPath = path.join(path.dirname(result.filePath), 'meta.json');
-            const companionMeta = this.buildScaledSpritesheetMeta(result.filePath, spritesheetResult);
-            await ipcRenderer.invoke(IPC_CHANNELS.WRITE_FILE, companionMetaPath, companionMeta);
+            let companionMetaPath = '';
+            if (writeCompanionMeta) {
+                companionMetaPath = path.join(path.dirname(result.filePath), 'meta.json');
+                const companionMeta = this.buildScaledSpritesheetMeta(result.filePath, spritesheetResult);
+                await ipcRenderer.invoke(IPC_CHANNELS.WRITE_FILE, companionMetaPath, companionMeta);
+            }
 
             // Build color info summary
             const referenceLabel = this._paletteMatchOptions.referenceSource === 'loaded-reference'
                 ? 'loaded reference image'
                 : `sprite frame ${this._paletteMatchOptions.referenceIndex + 1}`;
-            const colorInfo = `Reference Palette Match: ${referenceLabel}, ` +
-                `${this._paletteMatchOptions.paletteSize} colors, ` +
-                `strength ${Math.round(this._paletteMatchOptions.strength * 100)}%, ` +
-                `shading ${Math.round(this._paletteMatchOptions.preserveShading * 100)}%, ` +
-                `${(spritesheetResult.paletteMatchChangedPixels ?? 0).toLocaleString()} pixels changed`;
+            const colorInfo = paletteMatch.enabled
+                ? `Reference Palette Match: ${referenceLabel}, ` +
+                    `${this._paletteMatchOptions.paletteSize} colors, ` +
+                    `strength ${Math.round(this._paletteMatchOptions.strength * 100)}%, ` +
+                    `shading ${Math.round(this._paletteMatchOptions.preserveShading * 100)}%, ` +
+                    `${(spritesheetResult.paletteMatchChangedPixels ?? 0).toLocaleString()} pixels changed`
+                : 'Reference Palette Match: disabled';
 
             const fileSize = Math.ceil(base64Data.length * 0.75);
             alert(
@@ -2124,7 +2154,7 @@ class MobikEditor {
                 `Size: ${spritesheetResult.frameWidth}×${spritesheetResult.frameHeight} per frame\n` +
                 `Layout: ${spritesheetResult.columns}×${spritesheetResult.rows} (${spritesheetResult.totalFrames} frames)\n` +
                 `File: ~${round(fileSize / 1024, 1)} KB\n` +
-                `Meta: ${path.basename(companionMetaPath)}\n` +
+                (writeCompanionMeta ? `Meta: ${path.basename(companionMetaPath)}\n` : '') +
                 `Color: ${colorInfo}`
             );
 
@@ -2682,7 +2712,7 @@ class MobikEditor {
             }
 
             // Get sprite sheet filename from JSON
-            let spriteSheetFilename = metaData.spriteSheet;
+            let spriteSheetFilename = metaData.spriteSheet || metaData.meta?.image;
             if (!spriteSheetFilename && metaData.source?.files?.[0]) {
                 spriteSheetFilename = metaData.source.files[0];
             }
