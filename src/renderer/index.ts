@@ -11,7 +11,7 @@ import { SheetLoader } from '../core/loaders/SheetLoader';
 import { GridSlicer } from '../core/slicing/GridSlicer';
 import { MetaExporter } from '../core/export/MetaExporter';
 import { SpritesheetExporter } from '../core/export/SpritesheetExporter';
-import { PaletteSize, ReferencePalette, applyPaletteMatch, extractReferencePalette } from '../core/color/ReferencePaletteMatcher';
+import { PaletteSize, PaletteConsistencyMode, PaletteMatchPlan, ReferencePalette, applyPaletteMatch, applyPaletteMatchAcrossFrames, applyPaletteMatchPlan, buildPaletteMatchPlan, extractReferencePalette } from '../core/color/ReferencePaletteMatcher';
 import { Canvas } from '../editor/components/Canvas';
 import { Timeline } from '../editor/components/Timeline';
 import { PivotEditor } from '../editor/components/PivotEditor';
@@ -19,16 +19,32 @@ import { Toolbar, ToolbarAction } from '../editor/components/Toolbar';
 import { PlaybackController } from '../editor/controllers/PlaybackController';
 import { PlayerModeController, AnimationSlot } from '../editor/player';
 import { PlayerModeTimeline } from '../editor/components/PlayerModeTimeline';
+import { MetaParser } from '../core/runtime/MetaParser';
+import type { InteractiveConfig, MascotHitAreaConfig, MascotQueueStep, MascotRuleConfig, MascotStateConfig, PoseSetConfig, RuntimeFrame } from '../core/runtime/types';
 import { EditorEvents, globalEvents } from '../shared/events';
 import { IPC_CHANNELS } from '../shared/constants';
 import { round } from '../shared/utils';
 import { settings } from '../shared/SettingsManager';
 import { ImageFingerprint } from '../shared/ImageFingerprint';
+import { InteractiveEditor } from './InteractiveEditor';
+import { NormalizeByReferenceController } from './NormalizeByReferenceController';
 
 // Electron IPC
 const { ipcRenderer } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+interface MergeAnimationPart {
+    id: string;
+    metaPath: string;
+    name: string;
+    fps: number;
+    frameCount: number;
+    frames: RuntimeFrame[];
+    spriteSheets: { filename: string; path: string }[];
+    targetSize?: { w: number; h: number };
+    slotId?: string;
+}
 
 class MobikEditor {
     private _project: Project;
@@ -50,17 +66,24 @@ class MobikEditor {
     private _refPivot: { x: number; y: number } = { x: 0.5, y: 1.0 }; // Default: bottom-center
     private _refImage: HTMLImageElement | null = null;
     private _colorAdj = { brightness: 0, contrast: 0, saturation: 0, hue: 0, invert: 0 };
-    private _paletteMatchOptions = { enabled: false, referenceSource: 'frame' as 'frame' | 'loaded-reference', referenceIndex: 0, paletteSize: 32 as PaletteSize, strength: 0.65, preserveShading: 0.75, alphaThreshold: 10, applyTo: 'all' as 'current' | 'selected' | 'all', protectTransparent: true };
+    private _paletteMatchOptions = { enabled: false, referenceSource: 'frame' as 'frame' | 'loaded-reference', referenceIndex: 0, paletteSize: 32 as PaletteSize, strength: 0.65, preserveShading: 0.75, lightnessTolerance: 0.5, alphaThreshold: 10, applyTo: 'all' as 'current' | 'selected' | 'all', protectTransparent: true, paletteConsistency: 'global_sheet' as PaletteConsistencyMode };
     private _paletteCache: { key: string; palette: ReferencePalette } | null = null;
+    /** Cached cross-frame plan so live tuning reuses one mapping (invalidated by key). */
+    private _palettePlanCache: { key: string; plan: PaletteMatchPlan | null } | null = null;
+    private _paletteTuning = false;
     private _palettePreviewAnimationTimer: number | null = null;
     private _palettePreviewFrameIndex: number = 0;
+    private _mergeParts: MergeAnimationPart[] = [];
+    private _mergeExportFps: number | null = null;
 
     // Player Mode
     private _isPlayerMode: boolean = false;
+    private _playerModeKind: 'player' | 'merge' | null = null;
     private _playerController: PlayerModeController | null = null;
     private _playerTimeline: PlayerModeTimeline | null = null;
     private _playerCanvas: HTMLCanvasElement | null = null;
     private _playerCtx: CanvasRenderingContext2D | null = null;
+    private _interactiveEditor: InteractiveEditor | null = null;
 
     constructor() {
         this._project = Project.createNew('untitled');
@@ -89,6 +112,7 @@ class MobikEditor {
         this.setupUIListeners();
         this.setupNormalizedPreview();
         this.setupReferenceModeListeners();
+        this.setupInteractiveEditor();
         this.setupResizableLayout();
         this.applySettings();
         this.setupPlayerMode();
@@ -261,6 +285,9 @@ class MobikEditor {
         // Export button - opens choice dialog
         const exportBtn = document.getElementById('btn-export');
         exportBtn?.addEventListener('click', () => this.showExportDialog());
+
+        document.getElementById('btn-merge-import-json')?.addEventListener('click', () => this.importMergeAnimationParts());
+        document.getElementById('btn-merge-export-json')?.addEventListener('click', () => this.exportMergedAnimationJson());
 
         // Export size inputs
         const exportWidth = document.getElementById('export-width') as HTMLInputElement;
@@ -1216,39 +1243,51 @@ class MobikEditor {
         const strengthValue = document.getElementById('palette-strength-value');
         const preserve = document.getElementById('palette-preserve-shading') as HTMLInputElement;
         const preserveValue = document.getElementById('palette-preserve-shading-value');
+        const huePriority = document.getElementById('palette-hue-priority') as HTMLInputElement;
+        const huePriorityValue = document.getElementById('palette-hue-priority-value');
         const alpha = document.getElementById('palette-alpha-threshold') as HTMLInputElement;
         const applyTo = document.getElementById('palette-apply-to') as HTMLSelectElement;
+        const consistency = document.getElementById('palette-consistency') as HTMLSelectElement;
 
         const invalidateAndPreview = () => {
             this._paletteCache = null;
+            this._palettePlanCache = null;
             this.readPaletteMatchOptionsFromUI();
-            this.updatePaletteMatchPreview();
+            this.previewPaletteWhileTuning();
         };
 
         enabled?.addEventListener('change', () => {
             this.readPaletteMatchOptionsFromUI();
-            this.updatePaletteMatchPreview();
+            this.previewPaletteWhileTuning();
         });
         referenceSelect?.addEventListener('change', invalidateAndPreview);
         paletteSize?.addEventListener('change', invalidateAndPreview);
         alpha?.addEventListener('change', invalidateAndPreview);
-        applyTo?.addEventListener('change', () => this.readPaletteMatchOptionsFromUI());
+        consistency?.addEventListener('change', invalidateAndPreview);
+        applyTo?.addEventListener('change', invalidateAndPreview);
 
         strength?.addEventListener('input', () => {
             strengthValue && (strengthValue.textContent = `${strength.value}%`);
             this.readPaletteMatchOptionsFromUI();
-            this.updatePaletteMatchPreview();
+            this.previewPaletteWhileTuning();
         });
 
         preserve?.addEventListener('input', () => {
             preserveValue && (preserveValue.textContent = `${preserve.value}%`);
             this.readPaletteMatchOptionsFromUI();
-            this.updatePaletteMatchPreview();
+            this.previewPaletteWhileTuning();
+        });
+
+        huePriority?.addEventListener('input', () => {
+            huePriorityValue && (huePriorityValue.textContent = `${huePriority.value}%`);
+            this.readPaletteMatchOptionsFromUI();
+            this.previewPaletteWhileTuning();
         });
 
         document.getElementById('btn-preview-palette-match')?.addEventListener('click', () => {
             this._paletteCache = null;
-            this.updatePaletteMatchPreview();
+            this._palettePlanCache = null;
+            this.previewPaletteWhileTuning();
         });
 
         document.getElementById('btn-play-palette-preview')?.addEventListener('click', () => {
@@ -1299,8 +1338,10 @@ class MobikEditor {
         const paletteSize = document.getElementById('palette-size') as HTMLSelectElement | null;
         const strength = document.getElementById('palette-strength') as HTMLInputElement | null;
         const preserve = document.getElementById('palette-preserve-shading') as HTMLInputElement | null;
+        const huePriority = document.getElementById('palette-hue-priority') as HTMLInputElement | null;
         const alpha = document.getElementById('palette-alpha-threshold') as HTMLInputElement | null;
         const applyTo = document.getElementById('palette-apply-to') as HTMLSelectElement | null;
+        const consistency = document.getElementById('palette-consistency') as HTMLSelectElement | null;
 
         const referenceValue = referenceSelect?.value || (this._refImage ? 'loaded-reference' : '0');
         const referenceSource = referenceValue === 'loaded-reference' ? 'loaded-reference' : 'frame';
@@ -1314,9 +1355,13 @@ class MobikEditor {
             paletteSize: (parseInt(paletteSize?.value || '32', 10) as PaletteSize) || 32,
             strength: Math.max(0, Math.min(1, (parseInt(strength?.value || '65', 10) || 0) / 100)),
             preserveShading: Math.max(0, Math.min(1, (parseInt(preserve?.value || '75', 10) || 0) / 100)),
+            // "Hue Priority" is the intuitive inverse of lightnessTolerance:
+            // high priority => ignore lightness differences when matching parts.
+            lightnessTolerance: Math.max(0, Math.min(1, 1 - (parseInt(huePriority?.value || '50', 10) || 0) / 100)),
             alphaThreshold: Math.max(0, Math.min(255, parseInt(alpha?.value || '10', 10) || 0)),
             applyTo: (applyTo?.value as 'current' | 'selected' | 'all') || 'all',
-            protectTransparent: true
+            protectTransparent: true,
+            paletteConsistency: (consistency?.value as PaletteConsistencyMode) || 'global_sheet'
         };
     }
 
@@ -1327,6 +1372,50 @@ class MobikEditor {
 
         const selected = Math.max(0, Math.min(frames.length - 1, this._timeline.selectedIndex));
         return [selected];
+    }
+
+    /**
+     * Build (and cache) the shared cross-frame palette plan for the current
+     * mode. Returns null for `per_frame` (which uses the per-frame path). The
+     * cache key covers everything that changes the plan - the reference palette
+     * signature, the mode, the hue/lightness weighting and the target frames'
+     * identity - so live tuning of strength/preserve-shading reuses one plan
+     * (fast) while a reference / palette-size / frame change rebuilds it. Using
+     * this exact plan for the preview guarantees preview == applied result.
+     */
+    private getPaletteMatchPlan(palette: ReferencePalette): PaletteMatchPlan | null {
+        const mode = this._paletteMatchOptions.paletteConsistency;
+        if (mode === 'per_frame') return null;
+
+        const allFrames = this._project.animation.frames;
+        const targets = this.getPaletteMatchTargetIndices();
+        const targetsSig = targets
+            .map(i => {
+                const r = allFrames[i]?.sourceRect;
+                return r ? `${i}:${r.x},${r.y},${r.w},${r.h}` : `${i}:x`;
+            })
+            .join(';');
+        const key = [
+            this._paletteCache?.key ?? 'nokey',
+            mode,
+            this._paletteMatchOptions.lightnessTolerance,
+            targetsSig
+        ].join('|');
+
+        if (this._palettePlanCache?.key === key) return this._palettePlanCache.plan;
+
+        const sourceByIndex = allFrames.map(frame => SpritesheetExporter.getFrameImageData(frame));
+        const placeholder = new ImageData(1, 1);
+        const dense = sourceByIndex.map(data => data ?? placeholder);
+        const effectiveTargets = targets.filter(index => sourceByIndex[index] != null);
+
+        const plan = buildPaletteMatchPlan(dense, palette, {
+            ...this._paletteMatchOptions,
+            targetIndices: effectiveTargets,
+            paletteConsistency: mode
+        });
+        this._palettePlanCache = { key, plan };
+        return plan;
     }
 
     private getReferencePalette(): ReferencePalette | null {
@@ -1381,6 +1470,33 @@ class MobikEditor {
         ctx.drawImage(this._refImage, 0, 0);
         return ctx.getImageData(0, 0, canvas.width, canvas.height);
     }
+
+    private getPaletteReferenceImageData(): ImageData | null {
+        this.readPaletteMatchOptionsFromUI();
+
+        if (this._paletteMatchOptions.referenceSource === 'loaded-reference') {
+            return this.getLoadedReferenceImageData();
+        }
+
+        const referenceFrame = this._project.animation.getFrame(this._paletteMatchOptions.referenceIndex);
+        return referenceFrame ? SpritesheetExporter.getFrameImageData(referenceFrame) : null;
+    }
+
+    /**
+     * Refresh the palette preview as a direct result of the user adjusting a
+     * palette control. Temporarily forces the large on-canvas overlay on (even
+     * if the export toggle is off) so the effect is clearly visible while
+     * tuning; the overlay is cleared again on the next frame navigation.
+     */
+    private previewPaletteWhileTuning(): void {
+        this._paletteTuning = true;
+        try {
+            this.updatePaletteMatchPreview();
+        } finally {
+            this._paletteTuning = false;
+        }
+    }
+
     private updatePaletteMatchPreview(frameIndex: number = this._timeline.selectedIndex): void {
         const frame = this._project.animation.getFrame(Math.max(0, frameIndex));
         if (!frame) return;
@@ -1389,13 +1505,41 @@ class MobikEditor {
         if (!before) return;
 
         this.readPaletteMatchOptionsFromUI();
-        const palette = this._paletteMatchOptions.enabled ? this.getReferencePalette() : null;
-        const after = palette ? applyPaletteMatch(before, palette, this._paletteMatchOptions) : before;
 
-        if (frameIndex === this._timeline.selectedIndex) {
-            this._canvas.setPalettePreviewImage(palette ? SpritesheetExporter.imageDataToCanvas(after) : null);
+        // Compute the matched result for the side-by-side preview cells live,
+        // regardless of the "Enabled" export toggle, so adjusting any control
+        // (strength, hue priority, reference, ...) immediately shows its effect.
+        // The large on-canvas overlay still only appears when the effect is
+        // enabled, so normal frame editing isn't unexpectedly recolored.
+        // Only do the (relatively heavy) palette work when the effect is
+        // engaged - either enabled for export, or being actively previewed /
+        // tuned - so normal frame navigation stays cheap for projects that do
+        // not use palette matching. When engaged, the cells AND the on-canvas
+        // overlay update live as controls change.
+        const engaged = this._paletteMatchOptions.enabled || this._paletteTuning;
+        const palette = engaged ? this.getReferencePalette() : null;
+        const hasPalette = !!palette && palette.colors.length > 0;
+        // Use the SAME shared cross-frame plan the full apply will use (for
+        // global_sheet / reference_locked) so the preview matches the applied
+        // result exactly. Falls back to the per-frame path for `per_frame`.
+        let after = before;
+        if (hasPalette) {
+            const plan = this.getPaletteMatchPlan(palette as ReferencePalette);
+            after = plan
+                ? applyPaletteMatchPlan(before, plan, this._paletteMatchOptions)
+                : applyPaletteMatch(before, palette as ReferencePalette, this._paletteMatchOptions);
         }
 
+        if (frameIndex === this._timeline.selectedIndex) {
+            this._canvas.setPalettePreviewImage(hasPalette ? SpritesheetExporter.imageDataToCanvas(after) : null);
+        }
+
+        const reference = this.getPaletteReferenceImageData();
+        if (reference) {
+            this.drawImageDataPreview('palette-preview-reference', reference);
+        } else {
+            this.clearImageDataPreview('palette-preview-reference', 'No reference');
+        }
         this.drawImageDataPreview('palette-preview-before', before);
         this.drawImageDataPreview('palette-preview-after', after);
         this.drawImageDataPreview('palette-animation-preview', after);
@@ -1404,21 +1548,51 @@ class MobikEditor {
     private drawImageDataPreview(canvasId: string, imageData: ImageData): void {
         const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
         if (!canvas) return;
-        canvas.width = 128;
-        canvas.height = 96;
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
+        // Size the backing store to the element's displayed box (× device pixel
+        // ratio) so the preview is crisp and keeps the sprite's aspect ratio,
+        // instead of being stretched by CSS from a fixed 128×96 buffer.
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = Math.max(1, canvas.clientWidth || 128);
+        const cssH = Math.max(1, canvas.clientHeight || 96);
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
         ctx.imageSmoothingEnabled = false;
-        this.drawCheckerboard(ctx, canvas.width, canvas.height, 8);
+        this.drawCheckerboard(ctx, cssW, cssH, 8);
         const source = SpritesheetExporter.imageDataToCanvas(imageData);
-        const scale = Math.min(canvas.width / imageData.width, canvas.height / imageData.height);
+        const scale = Math.min(cssW / imageData.width, cssH / imageData.height);
         const w = Math.max(1, Math.floor(imageData.width * scale));
         const h = Math.max(1, Math.floor(imageData.height * scale));
-        const x = Math.floor((canvas.width - w) / 2);
-        const y = Math.floor((canvas.height - h) / 2);
+        const x = Math.floor((cssW - w) / 2);
+        const y = Math.floor((cssH - h) / 2);
         ctx.drawImage(source, x, y, w, h);
     }
+
+    private clearImageDataPreview(canvasId: string, message: string): void {
+        const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = Math.max(1, canvas.clientWidth || 128);
+        const cssH = Math.max(1, canvas.clientHeight || 96);
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        this.drawCheckerboard(ctx, cssW, cssH, 8);
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(message, cssW / 2, cssH / 2);
+    }
+
 
     private drawCheckerboard(ctx: CanvasRenderingContext2D, width: number, height: number, size: number): void {
         for (let y = 0; y < height; y += size) {
@@ -1444,7 +1618,9 @@ class MobikEditor {
         this._palettePreviewAnimationTimer = window.setInterval(() => {
             const count = this._project.animation.frameCount;
             if (count === 0) return;
+            this._paletteTuning = true;
             this.updatePaletteMatchPreview(this._palettePreviewFrameIndex % count);
+            this._paletteTuning = false;
             this._palettePreviewFrameIndex++;
         }, Math.max(33, Math.round(1000 / fps)));
     }
@@ -1462,13 +1638,29 @@ class MobikEditor {
         let changedFrames = 0;
         let changedPixels = 0;
 
-        for (const index of targetIndices) {
-            const frame = this._project.animation.getFrame(index);
-            if (!frame) continue;
-            const sourceData = SpritesheetExporter.getFrameImageData(frame);
-            if (!sourceData) continue;
+        // Rasterize every frame so the palette mapping can be shared across the
+        // whole animation (global_sheet) -> stable colors with no per-frame
+        // flicker, while each frame keeps its own shading.
+        const allFrames = this._project.animation.frames;
+        const sourceByIndex = allFrames.map(frame => SpritesheetExporter.getFrameImageData(frame));
+        const placeholder = new ImageData(1, 1);
+        const dense = sourceByIndex.map(data => data ?? placeholder);
+        const effectiveTargets = targetIndices.filter(index => sourceByIndex[index] != null);
+        if (effectiveTargets.length === 0) return;
 
-            const matched = applyPaletteMatch(sourceData, palette, this._paletteMatchOptions);
+        const matchedByIndex = applyPaletteMatchAcrossFrames(dense, palette, {
+            ...this._paletteMatchOptions,
+            targetIndices: effectiveTargets,
+            paletteConsistency: this._paletteMatchOptions.paletteConsistency
+        });
+
+        for (const index of effectiveTargets) {
+            const frame = allFrames[index];
+            if (!frame) continue;
+            const sourceData = sourceByIndex[index];
+            const matched = matchedByIndex[index];
+            if (!sourceData || !matched) continue;
+
             const diffPixels = this.countChangedOpaquePixels(sourceData, matched);
             if (diffPixels > 0) {
                 changedFrames++;
@@ -1478,6 +1670,7 @@ class MobikEditor {
         }
 
         this._paletteCache = null;
+        this._palettePlanCache = null;
         this._canvas.setPalettePreviewImage(null);
         this._canvas.render();
         this.updateNormalizedPreview();
@@ -1534,8 +1727,10 @@ class MobikEditor {
             paletteSize: this._paletteMatchOptions.paletteSize,
             strength: this._paletteMatchOptions.strength,
             preserveShading: this._paletteMatchOptions.preserveShading,
+            lightnessTolerance: this._paletteMatchOptions.lightnessTolerance,
             alphaThreshold: this._paletteMatchOptions.alphaThreshold,
-            targetIndices: this.getPaletteMatchTargetIndices()
+            targetIndices: this.getPaletteMatchTargetIndices(),
+            paletteConsistency: this._paletteMatchOptions.paletteConsistency
         };
     }
     // ========================================================================
@@ -1677,6 +1872,17 @@ class MobikEditor {
     // Resizable Layout
     // ========================================================================
 
+    private setupInteractiveEditor(): void {
+        const container = document.getElementById('interactive-editor');
+        if (!container) return;
+        this._interactiveEditor = new InteractiveEditor({
+            container,
+            canvas: this._canvas,
+            getProject: () => this._project,
+            getSelectedFrameIndex: () => this._timeline.selectedIndex,
+            markDirty: () => this._project.markDirty()
+        });
+    }
     private setupResizableLayout(): void {
         const panelHandle = document.getElementById('panel-resize-handle');
         const rightPanel = document.getElementById('right-panel');
@@ -1753,6 +1959,7 @@ class MobikEditor {
         }
 
         this.updateUIFromProject();
+        this._interactiveEditor?.resetForProject();
         this.refreshPaletteReferencePicker();
         this._paletteCache = null;
         this.updatePaletteMatchPreview();
@@ -1932,6 +2139,7 @@ class MobikEditor {
         this._canvas.setCurrentFrame(null);
         this._pivotEditor.setFrame(null);
         this.updateUIFromProject();
+        this._interactiveEditor?.resetForProject();
     }
 
     private async openProject(): Promise<void> {
@@ -1947,6 +2155,7 @@ class MobikEditor {
             if (result.canceled || !result.filePaths[0]) return;
 
             const json = await ipcRenderer.invoke(IPC_CHANNELS.READ_FILE, result.filePaths[0]);
+            const rawMeta = JSON.parse(json);
             this._project = MetaExporter.import(json);
             this._project.setFilePath(result.filePaths[0]);
 
@@ -1961,6 +2170,7 @@ class MobikEditor {
             }
 
             this.updateUIFromProject();
+            this._interactiveEditor?.setFromMeta(rawMeta);
             this.refreshPaletteReferencePicker();
             this._paletteCache = null;
             this.updatePaletteMatchPreview();
@@ -2001,6 +2211,300 @@ class MobikEditor {
     }
 
     // ========================================================================
+    // Merge Animation Parts
+    // ========================================================================
+
+    private async importMergeAnimationParts(): Promise<void> {
+        try {
+            const result = await ipcRenderer.invoke(IPC_CHANNELS.OPEN_FILE_DIALOG, {
+                title: 'Import Animation Part JSON',
+                filters: [{ name: 'Meta JSON', extensions: ['json'] }],
+                properties: ['openFile', 'multiSelections']
+            });
+
+            if (result.canceled || !result.filePaths?.length) return;
+
+            for (const metaPath of result.filePaths) {
+                await this.addMergeAnimationPartFromPath(metaPath);
+            }
+
+            this.renderMergePartsList();
+            this.syncPlayerSlotOrderWithMergeParts();
+            this.renderPlayerMode();
+        } catch (error) {
+            console.error('Failed to import merge parts:', error);
+            alert(`Failed to import merge parts: ${error}`);
+        }
+    }
+
+    private async addMergeAnimationPartFromPath(metaPath: string): Promise<void> {
+        const part = await this.loadMergeAnimationPart(metaPath);
+        if (!part) return;
+
+        if (this._mergeExportFps === null) this._mergeExportFps = part.fps;
+
+        if (this._playerController && part.spriteSheets[0]) {
+            const slot = await this._playerController.addSlot(part.spriteSheets[0].path, metaPath);
+            slot.name = part.name;
+            part.slotId = slot.id;
+        }
+
+        this._mergeParts.push(part);
+    }
+
+    private async loadMergeAnimationPart(metaPath: string): Promise<MergeAnimationPart | null> {
+        const metaJson = fs.readFileSync(metaPath, 'utf-8');
+        const rawMeta = JSON.parse(metaJson);
+        const parsed = MetaParser.parseObject(rawMeta);
+        const dir = path.dirname(metaPath);
+        const mergedFps = this._mergeExportFps || parsed.fps || this._project.animation.defaultFPS || 12;
+        const spriteSheets = new Map<string, { filename: string; path: string }>();
+
+        const frames: RuntimeFrame[] = parsed.frames.map((frame) => {
+            const filename = path.basename(frame.sourceFile || rawMeta.spriteSheet || rawMeta.meta?.image || 'spritesheet.png');
+            const spritePath = this.resolveMergeSpriteSheetPath(dir, frame.sourceFile || filename, rawMeta);
+            spriteSheets.set(filename, { filename, path: spritePath });
+
+            return {
+                src: filename,
+                rect: [frame.sourceRect.x, frame.sourceRect.y, frame.sourceRect.w, frame.sourceRect.h],
+                pivot: [frame.pivot.x, frame.pivot.y],
+                offset: [frame.offset.x, frame.offset.y],
+                scale: [frame.scale.x, frame.scale.y],
+                dur: Math.max(0.001, (frame.duration / parsed.fps) * mergedFps)
+            };
+        });
+
+        await this.resolveCompactMergeFrames(rawMeta, frames, Array.from(spriteSheets.values()));
+
+        return {
+            id: `merge_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            metaPath,
+            name: parsed.name || path.basename(metaPath, path.extname(metaPath)),
+            fps: parsed.fps,
+            frameCount: frames.length,
+            frames,
+            spriteSheets: Array.from(spriteSheets.values()),
+            targetSize: rawMeta.animation?.targetSize
+        };
+    }
+
+    private getMergeExportFps(): number {
+        return Math.max(1, this._mergeExportFps || this._project.animation.defaultFPS || 12);
+    }
+
+    private resolveMergeSpriteSheetPath(dir: string, sourceFile: string, rawMeta: any): string {
+        const candidates = [
+            sourceFile,
+            path.basename(sourceFile || ''),
+            rawMeta.spriteSheet,
+            rawMeta.meta?.image,
+            rawMeta.source?.files?.[0]
+        ].filter(Boolean);
+
+        for (const candidate of candidates) {
+            const candidatePath = path.isAbsolute(candidate) ? candidate : path.join(dir, candidate);
+            if (fs.existsSync(candidatePath)) return candidatePath;
+        }
+
+        return path.join(dir, path.basename(sourceFile || rawMeta.spriteSheet || 'spritesheet.png'));
+    }
+
+    private async resolveCompactMergeFrames(rawMeta: any, frames: RuntimeFrame[], spriteSheets: { filename: string; path: string }[]): Promise<void> {
+        const grid = rawMeta.animation?.grid;
+        if (!grid || frames.length === 0 || frames.some(frame => frame.rect[2] > 0 && frame.rect[3] > 0)) return;
+
+        const sheet = spriteSheets[0];
+        if (!sheet || !fs.existsSync(sheet.path)) return;
+
+        const size = await this.loadImageSize(sheet.path);
+        const cellW = Math.floor(size.width / grid.columns);
+        const cellH = Math.floor(size.height / grid.rows);
+
+        frames.forEach((frame, index) => {
+            const col = index % grid.columns;
+            const row = Math.floor(index / grid.columns);
+            frame.rect = [col * cellW, row * cellH, cellW, cellH];
+            frame.src = sheet.filename;
+        });
+    }
+
+    private async loadImageSize(filePath: string): Promise<{ width: number; height: number }> {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+            img.onerror = () => reject(new Error(`Failed to load spritesheet: ${filePath}`));
+            img.src = `file:///${filePath.replace(/\\/g, '/')}`;
+        });
+    }
+
+    private renderMergePartsList(): void {
+        const list = document.getElementById('merge-parts-list');
+        if (!list) return;
+
+        list.innerHTML = '';
+        if (this._mergeParts.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'merge-empty';
+            empty.textContent = 'No JSON parts imported';
+            list.appendChild(empty);
+            return;
+        }
+
+        this._mergeParts.forEach((part, index) => {
+            const item = document.createElement('div');
+            item.className = 'merge-part-item';
+
+            const number = document.createElement('div');
+            number.className = 'merge-part-index';
+            number.textContent = String(index + 1);
+
+            const info = document.createElement('div');
+            const title = document.createElement('div');
+            title.className = 'merge-part-title';
+            title.textContent = part.name;
+            const meta = document.createElement('div');
+            meta.className = 'merge-part-meta';
+            meta.textContent = `${part.frameCount} frames | ${Math.round(part.fps * 100) / 100} fps | ${path.basename(part.metaPath)}`;
+            info.append(title, meta);
+
+            const controls = document.createElement('div');
+            controls.className = 'merge-part-controls';
+            controls.append(
+                this.createMergePartButton('↑', () => this.moveMergePart(index, -1), index === 0),
+                this.createMergePartButton('↓', () => this.moveMergePart(index, 1), index === this._mergeParts.length - 1),
+                this.createMergePartButton('×', () => this.removeMergePart(index))
+            );
+
+            item.append(number, info, controls);
+            list.appendChild(item);
+        });
+    }
+
+    private createMergePartButton(label: string, onClick: () => void, disabled: boolean = false): HTMLButtonElement {
+        const button = document.createElement('button');
+        button.className = 'btn btn-secondary btn-sm';
+        button.textContent = label;
+        button.disabled = disabled;
+        button.addEventListener('click', onClick);
+        return button;
+    }
+
+    private moveMergePart(index: number, direction: number): void {
+        const next = index + direction;
+        if (next < 0 || next >= this._mergeParts.length) return;
+        const [part] = this._mergeParts.splice(index, 1);
+        this._mergeParts.splice(next, 0, part);
+        this.renderMergePartsList();
+        this.syncPlayerSlotOrderWithMergeParts();
+        this.renderPlayerMode();
+    }
+
+    private removeMergePart(index: number): void {
+        const [part] = this._mergeParts.splice(index, 1);
+        if (part?.slotId) this._playerController?.removeSlot(part.slotId);
+        if (this._mergeParts.length === 0) this._mergeExportFps = null;
+        this.renderMergePartsList();
+        this.syncPlayerSlotOrderWithMergeParts();
+        this.renderPlayerMode();
+    }
+
+    private syncPlayerSlotOrderWithMergeParts(): void {
+        const slotIds = this._mergeParts
+            .map(part => part.slotId)
+            .filter((slotId): slotId is string => Boolean(slotId));
+        this._playerController?.setSlotOrder(slotIds);
+    }
+
+    private async exportMergedAnimationJson(): Promise<void> {
+        if (this._mergeParts.length === 0) {
+            alert('Import at least one JSON part before exporting a merged animation.');
+            return;
+        }
+
+        const result = await ipcRenderer.invoke(IPC_CHANNELS.SAVE_FILE_DIALOG, {
+            title: 'Export Merged Animation JSON',
+            defaultPath: `${this.sanitizeFilename(this._mergeParts.map(part => part.name).join('_')) || 'merged'}_merged.json`,
+            filters: [{ name: 'JSON', extensions: ['json'] }]
+        });
+
+        if (result.canceled || !result.filePath) return;
+
+        const exportDir = path.dirname(result.filePath);
+        const mergedFps = this.getMergeExportFps();
+        const targetSize = this._mergeParts.find(part => part.targetSize)?.targetSize;
+        const pathToExportName = new Map<string, string>();
+        const usedFilenames = new Set<string>();
+        const frames: RuntimeFrame[] = [];
+
+        for (const part of this._mergeParts) {
+            const sheetNameMap = new Map<string, string>();
+            for (const sheet of part.spriteSheets) {
+                const resolvedSheetPath = path.resolve(sheet.path);
+                let exportName = pathToExportName.get(resolvedSheetPath);
+                if (!exportName) {
+                    exportName = this.getUniqueMergeSpriteFilename(sheet.filename, usedFilenames);
+                    pathToExportName.set(resolvedSheetPath, exportName);
+                    usedFilenames.add(exportName.toLowerCase());
+                    this.copyMergeSpriteSheet(sheet.path, path.join(exportDir, exportName));
+                }
+                sheetNameMap.set(sheet.filename, exportName);
+            }
+
+            for (const frame of part.frames) {
+                frames.push({
+                    ...frame,
+                    src: sheetNameMap.get(frame.src) || frame.src
+                });
+            }
+        }
+
+        const mergedMeta = {
+            version: '1.1',
+            spriteSheets: Array.from(pathToExportName.values()),
+            animation: {
+                name: this.sanitizeFilename(this._mergeParts.map(part => part.name).join('_')) || 'merged_animation',
+                fps: mergedFps,
+                loop: this._project.animation.loop,
+                frameCount: frames.length,
+                frames,
+                ...(targetSize && { targetSize })
+            }
+        };
+
+        await ipcRenderer.invoke(IPC_CHANNELS.WRITE_FILE, result.filePath, JSON.stringify(mergedMeta, null, 2));
+        alert(`Merged animation exported.\nParts: ${this._mergeParts.length}\nFrames: ${frames.length}\nSpritesheets: ${pathToExportName.size}`);
+    }
+
+    private getUniqueMergeSpriteFilename(filename: string, used: Set<string>): string {
+        const ext = path.extname(filename) || '.png';
+        const base = this.sanitizeFilename(path.basename(filename, ext)) || 'spritesheet';
+        let candidate = `${base}${ext}`;
+        let index = 2;
+        while (used.has(candidate.toLowerCase())) {
+            candidate = `${base}_${index}${ext}`;
+            index++;
+        }
+        return candidate;
+    }
+
+    private copyMergeSpriteSheet(sourcePath: string, targetPath: string): void {
+        if (!fs.existsSync(sourcePath)) {
+            throw new Error(`Spritesheet not found: ${sourcePath}`);
+        }
+        if (path.resolve(sourcePath).toLowerCase() === path.resolve(targetPath).toLowerCase()) return;
+        fs.copyFileSync(sourcePath, targetPath);
+    }
+
+    private sanitizeFilename(name: string): string {
+        return name
+            .toLowerCase()
+            .replace(/\.[^/.\\]+$/, '')
+            .replace(/[^a-z0-9]+/g, '_')
+            .replace(/^_|_$/g, '');
+    }
+
+    // ========================================================================
     // Export Dialog
     // ========================================================================
 
@@ -2012,6 +2516,7 @@ class MobikEditor {
         const metaBtn = document.getElementById('export-meta-btn');
         const spritesheetBtn = document.getElementById('export-spritesheet-btn');
         const bundleBtn = document.getElementById('export-bundle-btn');
+        const interactiveBtn = document.getElementById('export-interactive-btn');
         const cancelBtn = document.getElementById('export-cancel');
 
         const closeDialog = () => dialog?.classList.add('hidden');
@@ -2078,6 +2583,81 @@ class MobikEditor {
         }
     }
 
+    private async exportInteractiveMascot(): Promise<void> {
+        try {
+            const errors = MetaExporter.validate(this._project);
+            if (errors.length > 0) {
+                const messages = errors.map(e => e.field + ': ' + e.message).join('\n');
+                alert('Validation errors:\n' + messages);
+                return;
+            }
+
+            const result = await ipcRenderer.invoke(IPC_CHANNELS.SAVE_FILE_DIALOG, {
+                title: 'Export Interactive Mascot JSON',
+                defaultPath: this.generateInteractiveMascotFilename(),
+                filters: [
+                    { name: 'Mobik Interactive JSON', extensions: ['json'] }
+                ]
+            });
+
+            if (result.canceled) return;
+
+            const exportJson = this.buildInteractiveMascotJson();
+            await ipcRenderer.invoke(IPC_CHANNELS.WRITE_FILE, result.filePath, exportJson);
+            const size = new Blob([exportJson]).size;
+            alert('Interactive mascot exported!\nFile size: ' + round(size / 1024, 2) + ' KB');
+        } catch (error) {
+            console.error('Failed to export interactive mascot:', error);
+            alert('Failed to export interactive mascot: ' + error);
+        }
+    }
+
+    private buildInteractiveMascotJson(): string {
+        const legacy = MetaExporter.export(this._project, false, this._colorAdj).data as any;
+        const animationName = legacy.animation?.name || 'default';
+        const snapshot = this._interactiveEditor?.getSnapshot();
+        const interactive = snapshot?.config || {
+            defaultState: 'idle',
+            defaultTransitionMs: 120,
+            states: {
+                idle: { type: 'clip', animation: animationName, priority: 0, loop: legacy.animation?.loop ?? true, interruptible: true }
+            },
+            events: {},
+            hitAreas: [],
+            pointerTracking: { enabled: false, mode: 'angle', thresholdPx: 24, debounceMs: 80 },
+            idleBehavior: { enabled: false, inactiveAfterMs: 5000, minDelayMs: 4000, maxDelayMs: 12000, pool: [{ state: 'idle', weight: 1 }] },
+            queues: {},
+            rules: [],
+            debug: { enabled: false }
+        };
+
+        const data = {
+            ...legacy,
+            format: 'mobik-interactive-mascot',
+            source: {
+                ...legacy.source,
+                basePath: '.'
+            },
+            spriteSheet: legacy.source?.files?.[0] || null,
+            animations: {
+                [animationName]: legacy.animation
+            },
+            poseSets: snapshot?.poseSets || {},
+            interactive
+        };
+
+        return JSON.stringify(data, null, 2);
+    }
+    private generateInteractiveMascotFilename(): string {
+        const sourceName = this._project.source.files[0]
+            ? this._project.source.files[0].replace(/\.[^/.\\]+$/, '')
+            : this._project.name;
+        const name = sourceName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '_')
+            .replace(/^_|_$/g, '');
+        return (name || 'untitled') + '_interactive.mobik.json';
+    }
     private async exportScaledSpritesheet(writeCompanionMeta: boolean = false): Promise<void> {
         try {
             // Validate
@@ -2131,7 +2711,7 @@ class MobikEditor {
 
             let companionMetaPath = '';
             if (writeCompanionMeta) {
-                companionMetaPath = path.join(path.dirname(result.filePath), 'meta.json');
+                companionMetaPath = path.join(path.dirname(result.filePath), MetaExporter.generateFilename(this._project));
                 const companionMeta = this.buildScaledSpritesheetMeta(result.filePath, spritesheetResult);
                 await ipcRenderer.invoke(IPC_CHANNELS.WRITE_FILE, companionMetaPath, companionMeta);
             }
@@ -2394,18 +2974,31 @@ class MobikEditor {
         // Mode toggle button
         const modeToggleBtn = document.getElementById('mode-toggle-btn');
         modeToggleBtn?.addEventListener('click', () => this.togglePlayerMode());
+
+        const mergeModeToggleBtn = document.getElementById('merge-mode-toggle-btn');
+        mergeModeToggleBtn?.addEventListener('click', () => this.toggleMergeMode());
     }
 
     togglePlayerMode(): void {
-        if (this._isPlayerMode) {
+        if (this._playerModeKind === 'player') {
             this.exitPlayerMode();
         } else {
-            this.enterPlayerMode();
+            this.enterPlayerMode('player');
         }
     }
 
-    private enterPlayerMode(): void {
+    toggleMergeMode(): void {
+        if (this._playerModeKind === 'merge') {
+            this.exitPlayerMode();
+        } else {
+            this.enterPlayerMode('merge');
+        }
+    }
+
+    private enterPlayerMode(kind: 'player' | 'merge' = 'player'): void {
+        if (this._isPlayerMode) this.exitPlayerMode();
         this._isPlayerMode = true;
+        this._playerModeKind = kind;
 
         // Create player controller if needed
         if (!this._playerController) {
@@ -2431,8 +3024,13 @@ class MobikEditor {
             });
 
             // Handle import request
-            this._playerTimeline.on('import-requested', () => this.importAnimation());
+            this._playerTimeline.on('import-requested', () => {
+                if (this._playerModeKind === 'merge') this.importMergeAnimationParts();
+                else this.importAnimation();
+            });
         }
+
+        this._playerController.setDisplayMode(kind === 'merge' ? 'linear' : 'grid');
 
         // Show player canvas, hide editor canvas
         const playerCanvasContainer = document.getElementById('player-canvas-container');
@@ -2444,8 +3042,14 @@ class MobikEditor {
         this._playerTimeline.show();
         this._pivotEditor.hide?.();
 
-        // Hide preview panel
+        // Hide editor-only panels and show merge controls
         document.getElementById('normalized-preview')?.classList.add('hidden');
+        document.getElementById('animation-properties')?.classList.add('hidden');
+        document.getElementById('interactive-editor')?.classList.add('hidden');
+        document.getElementById('export-section')?.classList.add('hidden');
+        document.getElementById('reference-mode-panel')?.classList.add('hidden');
+        document.getElementById('merge-mode-panel')?.classList.toggle('hidden', kind !== 'merge');
+        if (kind === 'merge') this.renderMergePartsList();
 
         // Update toggle button
         this.updateModeToggleUI(true);
@@ -2495,6 +3099,8 @@ class MobikEditor {
                 const slot = this._playerController.getSlotAtPosition(worldX, worldY);
                 if (slot) {
                     this._playerController.selectSlot(slot.id);
+                    this._playerController.handleClick(worldX, worldY);
+                    this.renderPlayerMode();
                     this._playerIsDraggingSlot = true;
                     this._playerLastMouse = { x: e.clientX, y: e.clientY };
                 } else {
@@ -2519,6 +3125,12 @@ class MobikEditor {
                 this._playerController.moveSelectedSlot(dx / this._playerZoom, dy / this._playerZoom);
                 this._playerLastMouse = { x: e.clientX, y: e.clientY };
                 this.renderPlayerMode();
+            } else {
+                const rect = this._playerCanvas!.getBoundingClientRect();
+                const worldX = (e.clientX - rect.left - this._playerPan.x) / this._playerZoom;
+                const worldY = (e.clientY - rect.top - this._playerPan.y) / this._playerZoom;
+                this._playerController.handlePointerMove(worldX, worldY);
+                this.renderPlayerMode();
             }
         });
 
@@ -2530,6 +3142,8 @@ class MobikEditor {
         this._playerCanvas.addEventListener('mouseleave', () => {
             this._playerIsPanning = false;
             this._playerIsDraggingSlot = false;
+            this._playerController?.handlePointerLeave();
+            this.renderPlayerMode();
         });
 
         // Zoom with wheel
@@ -2571,7 +3185,14 @@ class MobikEditor {
                 if (file.name.endsWith('.json')) {
                     const metaPath = (file as any).path;
                     if (metaPath) {
-                        await this.importAnimationFromPath(metaPath);
+                        if (this._playerModeKind === 'merge') {
+                            await this.addMergeAnimationPartFromPath(metaPath);
+                            this.renderMergePartsList();
+                            this.syncPlayerSlotOrderWithMergeParts();
+                        } else {
+                            await this.importAnimationFromPath(metaPath);
+                        }
+                        this.renderPlayerMode();
                     }
                 }
             }
@@ -2580,6 +3201,7 @@ class MobikEditor {
 
     private exitPlayerMode(): void {
         this._isPlayerMode = false;
+        this._playerModeKind = null;
 
         // Stop playback
         this._playerController?.stop();
@@ -2594,8 +3216,13 @@ class MobikEditor {
         this._timeline.show();
         this._pivotEditor.show?.();
 
-        // Show preview panel
+        // Restore editor panels
         document.getElementById('normalized-preview')?.classList.remove('hidden');
+        document.getElementById('animation-properties')?.classList.remove('hidden');
+        document.getElementById('interactive-editor')?.classList.remove('hidden');
+        document.getElementById('export-section')?.classList.remove('hidden');
+        if (this._isReferenceMode) document.getElementById('reference-mode-panel')?.classList.remove('hidden');
+        document.getElementById('merge-mode-panel')?.classList.add('hidden');
 
         // Update toggle button
         this.updateModeToggleUI(false);
@@ -2606,13 +3233,16 @@ class MobikEditor {
     }
 
     private updateModeToggleUI(isPlayerMode: boolean): void {
-        const btn = document.getElementById('mode-toggle-btn');
-        const badge = btn?.querySelector('.mode-badge-indicator');
+        const playerBtn = document.getElementById('mode-toggle-btn');
+        const playerBadge = playerBtn?.querySelector('.mode-badge-indicator');
+        const mergeBtn = document.getElementById('merge-mode-toggle-btn');
 
-        if (btn && badge) {
-            btn.classList.toggle('active', isPlayerMode);
-            badge.textContent = isPlayerMode ? 'Player' : 'Editor';
+        if (playerBtn && playerBadge) {
+            playerBtn.classList.toggle('active', this._playerModeKind === 'player');
+            playerBadge.textContent = this._playerModeKind === 'player' ? 'Player' : 'Editor';
         }
+
+        mergeBtn?.classList.toggle('active', this._playerModeKind === 'merge');
     }
 
     private async importAnimation(): Promise<void> {
@@ -2711,22 +3341,10 @@ class MobikEditor {
                 return;
             }
 
-            // Get sprite sheet filename from JSON
-            let spriteSheetFilename = metaData.spriteSheet || metaData.meta?.image;
-            if (!spriteSheetFilename && metaData.source?.files?.[0]) {
-                spriteSheetFilename = metaData.source.files[0];
-            }
+            const spriteSheetPath = this.resolvePlayerSpriteSheetPath(dir, metaData);
 
-            if (!spriteSheetFilename) {
-                console.error('Sprite sheet not specified in:', metaPath);
-                return;
-            }
-
-            // Build full path to sprite sheet
-            const spriteSheetPath = path.join(dir, spriteSheetFilename);
-
-            if (!fs.existsSync(spriteSheetPath)) {
-                console.error('Sprite sheet not found:', spriteSheetPath);
+            if (!spriteSheetPath) {
+                console.error("Sprite sheet not found for:", metaPath);
                 return;
             }
 
@@ -2739,6 +3357,30 @@ class MobikEditor {
         } catch (error) {
             console.error('Failed to import animation from path:', error);
         }
+    }
+
+    private resolvePlayerSpriteSheetPath(dir: string, metaData: any): string | null {
+        const basePath = metaData.source?.basePath;
+        const candidates = [
+            ...(Array.isArray(metaData.spriteSheets) ? metaData.spriteSheets : []),
+            metaData.spriteSheet,
+            metaData.meta?.image,
+            ...(Array.isArray(metaData.source?.files) ? metaData.source.files : [])
+        ].filter(Boolean);
+
+        for (const candidate of candidates) {
+            const direct = path.isAbsolute(candidate) ? candidate : path.join(dir, candidate);
+            if (fs.existsSync(direct)) return direct;
+
+            if (basePath) {
+                const based = path.isAbsolute(basePath)
+                    ? path.join(basePath, path.basename(candidate))
+                    : path.join(dir, basePath, path.basename(candidate));
+                if (fs.existsSync(based)) return based;
+            }
+        }
+
+        return null;
     }
 
     private resizePlayerCanvas(): void {
@@ -2828,7 +3470,17 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
         console.error('[Mobik] Failed to initialize editor:', error);
     }
+
+    // Standalone "Normalize by Reference" tool. Self-wiring and decoupled from
+    // the editor/player so a failure here never breaks the main app.
+    try {
+        new NormalizeByReferenceController();
+    } catch (error) {
+        console.error('[Mobik] Failed to initialize Normalize tool:', error);
+    }
 });
+
+
 
 
 

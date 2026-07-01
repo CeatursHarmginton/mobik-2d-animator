@@ -114,7 +114,7 @@ export class PlayerModeTimeline extends EventEmitter {
             this._listElement.innerHTML = `
                 <div class="player-empty-message">
                     No animations imported.<br>
-                    Click "+ Import" to add sprite sheets.
+                    Click Import to add sprite sheets.
                 </div>
             `;
             return;

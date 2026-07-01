@@ -1,7 +1,29 @@
-src/core/index.ts(12,1): error TS2308: Module './models' has already exported a member named 'GridSliceConfig'. Consider explicitly re-exporting to resolve the ambiguity.
-src/core/index.ts(12,1): error TS2308: Module './models' has already exported a member named 'ManualSliceRegion'. Consider explicitly re-exporting to resolve the ambiguity.
-src/editor/components/PivotEditor.ts(17,13): error TS2564: Property '_element' has no initializer and is not definitely assigned in the constructor.
-src/editor/components/Timeline.ts(23,13): error TS2564: Property '_element' has no initializer and is not definitely assigned in the constructor.
-src/editor/components/Timeline.ts(24,13): error TS2564: Property '_frameList' has no initializer and is not definitely assigned in the constructor.
-src/editor/components/Timeline.ts(25,13): error TS2564: Property '_scrollContainer' has no initializer and is not definitely assigned in the constructor.
-src/editor/components/Toolbar.ts(31,13): error TS2564: Property '_element' has no initializer and is not definitely assigned in the constructor.
+Mobik 2D Animator - Build Status
+================================
+Last checked: 2026-06-09
+
+TypeScript build (tsc --noEmit ............................ PASS, 0 errors)
+Test type-check (tsc -p tsconfig.test.json ............... PASS, 0 errors)
+
+No outstanding compiler errors.
+
+Previously reported issues (now resolved)
+------------------------------------------
+- TS2308  src/core/index.ts: duplicate exports of `GridSliceConfig` and
+          `ManualSliceRegion` from './models' vs './slicing/*'. Resolved by
+          re-exporting the slicing types explicitly in src/core/index.ts.
+- TS2564  src/editor/components/{PivotEditor,Timeline,Toolbar}.ts:
+          uninitialised `_element` / `_frameList` / `_scrollContainer`
+          properties. Resolved (definite assignment / initialisation).
+
+Tests
+-----
+Unit tests live under tests/ and run with `npm test` (Jest + ts-jest).
+Verified passing (2026-06-09), 36 tests across 3 suites:
+  - tests/shared/utils.test.ts ........................ 21 passed
+  - tests/core/color/ReferencePaletteMatcher.test.ts ..  9 passed
+  - tests/core/slicing/GridSlicer.test.ts .............  6 passed
+
+Note: the default parallel `npm test` can time out in constrained
+sandboxes. Running per-suite in-band is reliable, e.g.:
+  npx jest <path/to/file.test.ts> --runInBand

@@ -60,6 +60,9 @@
                     <button id="mode-toggle-btn" class="mode-toggle-btn">
                         <span class="mode-badge-indicator">Editor</span>
                     </button>
+                    <button id="merge-mode-toggle-btn" class="mode-toggle-btn">
+                        <span class="mode-badge-indicator">Merge</span>
+                    </button>
                     <span id="zoom-level">100%</span>
                     <span id="cursor-pos">0, 0</span>
                     <span id="frame-size">0 x 0</span>
@@ -152,6 +155,14 @@
                                     <span class="color-adj-label">Reference Frame</span>
                                     <select id="palette-reference-frame" class="input-select"></select>
                                 </div>
+                                <div class="color-adj-row" title="How color mapping stays consistent across frames. Global (whole sheet) prevents color flicker during animation.">
+                                    <span class="color-adj-label">Color Consistency</span>
+                                    <select id="palette-consistency" class="input-select">
+                                        <option value="global_sheet" selected>Global (whole sheet)</option>
+                                        <option value="reference_locked">Locked to reference</option>
+                                        <option value="per_frame">Per frame (legacy)</option>
+                                    </select>
+                                </div>
                                 <div class="color-adj-row">
                                     <span class="color-adj-label">Palette Size</span>
                                     <select id="palette-size" class="input-select">
@@ -169,6 +180,11 @@
                                     <span class="color-adj-label">Preserve Shading</span>
                                     <input type="range" id="palette-preserve-shading" class="slider color-slider" min="0" max="100" value="75">
                                     <span id="palette-preserve-shading-value" class="slider-value">75%</span>
+                                </div>
+                                <div class="color-adj-row" title="Higher = match parts by hue/chroma and ignore lightness differences between spritesheets.">
+                                    <span class="color-adj-label">Hue Priority</span>
+                                    <input type="range" id="palette-hue-priority" class="slider color-slider" min="0" max="100" value="50">
+                                    <span id="palette-hue-priority-value" class="slider-value">50%</span>
                                 </div>
                                 <div class="color-adj-row">
                                     <span class="color-adj-label">Alpha Threshold</span>
@@ -189,11 +205,15 @@
                             </label>
                             <div class="palette-preview-grid">
                                 <div class="palette-preview-cell">
-                                    <span class="palette-preview-label">Before</span>
+                                    <span class="palette-preview-label">Reference</span>
+                                    <canvas id="palette-preview-reference"></canvas>
+                                </div>
+                                <div class="palette-preview-cell">
+                                    <span class="palette-preview-label">Current</span>
                                     <canvas id="palette-preview-before"></canvas>
                                 </div>
                                 <div class="palette-preview-cell">
-                                    <span class="palette-preview-label">After</span>
+                                    <span class="palette-preview-label">Matched</span>
                                     <canvas id="palette-preview-after"></canvas>
                                 </div>
                             </div>
@@ -254,6 +274,8 @@
                         </div>
                     </div>
 
+                    <!-- Interactive Mascot Editor -->
+                    <div id="interactive-editor"></div>
                     <!-- Export Section -->
                     <div id="export-section">
                         <div class="panel-header">Export</div>
@@ -274,6 +296,184 @@
                             <button id="btn-export" class="btn btn-primary full-width">
                                 Export...
                             </button>
+                        </div>
+                        <div class="panel-section">
+                            <button id="btn-open-normalize" class="btn btn-secondary full-width">
+                                Normalize by Reference…
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Merge Animation Mode Panel -->
+                    <div id="merge-mode-panel" class="hidden">
+                        <div class="panel-header">Merge Animation Parts</div>
+                        <div class="panel-section">
+                            <label class="panel-label">JSON Play Order</label>
+                            <div id="merge-parts-list" class="merge-parts-list">
+                                <div class="merge-empty">No JSON parts imported</div>
+                            </div>
+                            <div class="merge-actions">
+                                <button id="btn-merge-import-json" class="btn btn-secondary btn-sm">Import JSON</button>
+                                <button id="btn-merge-export-json" class="btn btn-primary btn-sm">Export Merged</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Normalize by Reference Panel -->
+                    <div id="normalize-panel" class="hidden">
+                        <div class="panel-header">
+                            Normalize by Reference
+                            <button id="btn-close-normalize" class="btn btn-mini" title="Close">✕</button>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Preset</label>
+                            <div class="pivot-preset-btns">
+                                <button class="btn btn-mini" data-normalize-preset="standing" title="idle / talk / standing">Standing</button>
+                                <button class="btn btn-mini" data-normalize-preset="floating" title="drag / lifted / floating">Floating</button>
+                                <button class="btn btn-mini" data-normalize-preset="jump" title="jump / notification">Jump</button>
+                                <button class="btn btn-mini" data-normalize-preset="kaboo" title="appear from below">Kaboo</button>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <button id="nz-pick-reference" class="btn btn-secondary full-width">Reference Image…</button>
+                            <p id="nz-reference-name" class="help-text">No reference selected</p>
+                        </div>
+                        <div class="panel-section">
+                            <button id="nz-pick-sheet" class="btn btn-secondary full-width">Sprite Sheet…</button>
+                            <p id="nz-sheet-name" class="help-text">No sheet selected</p>
+                        </div>
+
+                        <div class="panel-section">
+                            <div class="panel-row">
+                                <div class="input-group">
+                                    <span class="input-label">Cols</span>
+                                    <input type="number" id="nz-columns" class="input-number" min="1" value="1">
+                                </div>
+                                <div class="input-group">
+                                    <span class="input-label">Rows</span>
+                                    <input type="number" id="nz-rows" class="input-number" min="1" value="1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Anchor Mode</label>
+                            <select id="nz-anchor" class="input-select">
+                                <option value="bottom-center">bottom-center</option>
+                                <option value="center">center</option>
+                                <option value="upper-center">upper-center</option>
+                            </select>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Scale Mode</label>
+                            <select id="nz-scale-mode" class="input-select">
+                                <option value="match_reference_height">match reference height</option>
+                                <option value="fit_safe_area">fit safe area</option>
+                                <option value="manual_scale">manual scale</option>
+                            </select>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Scale Ratio</label>
+                            <div class="slider-container">
+                                <input type="range" id="nz-scale-ratio" class="slider" min="10" max="200" value="100">
+                                <span id="nz-scale-ratio-value" class="slider-value">1.00</span>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Target Height Ratio</label>
+                            <div class="slider-container">
+                                <input type="range" id="nz-target-height" class="slider" min="50" max="100" value="85">
+                                <span id="nz-target-height-value" class="slider-value">0.85</span>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Manual Scale</label>
+                            <input type="number" id="nz-manual-scale" class="input-number" min="0.05" step="0.05" value="1.0">
+                        </div>
+
+                        <div class="panel-section">
+                            <div class="panel-row">
+                                <div class="input-group">
+                                    <span class="input-label">Safe Pad</span>
+                                    <input type="number" id="nz-safe-padding" class="input-number" min="0" value="40">
+                                </div>
+                                <div class="input-group">
+                                    <span class="input-label">Alpha</span>
+                                    <input type="number" id="nz-alpha-threshold" class="input-number" min="0" max="255" value="10">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="panel-section">
+                            <div class="panel-row">
+                                <div class="input-group">
+                                    <span class="input-label">BBox Pad</span>
+                                    <input type="number" id="nz-bbox-padding" class="input-number" min="0" value="2">
+                                </div>
+                                <div class="input-group">
+                                    <span class="input-label">Top Off</span>
+                                    <input type="number" id="nz-top-offset" class="input-number" value="0">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="checkbox-label"><input type="checkbox" id="nz-export-frames"> Export individual frames</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-export-metadata" checked> Export metadata JSON</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-smoothing" checked> Enable placement smoothing</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-auto-reduce" checked> Auto reduce scale to avoid cropping</label>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Debug output (optional)</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-debug-overlay"> Export debug overlay sheet</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-before-after"> Export before sheet (before/after)</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-debug-metadata"> Add debug block to metadata JSON</label>
+                        </div>
+
+                        <div class="panel-section">
+                            <label class="panel-label">Preview Overlays</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-show-bbox" checked> Character bbox</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-show-safe" checked> Safe area</label>
+                            <label class="checkbox-label"><input type="checkbox" id="nz-show-reference" checked> Reference bounds</label>
+                            <div class="panel-row" style="margin-top: 8px;">
+                                <div class="input-group">
+                                    <span class="input-label">Frame</span>
+                                    <input type="number" id="nz-preview-frame" class="input-number" min="0" value="0">
+                                </div>
+                                <button id="nz-preview-btn" class="btn btn-secondary" style="flex:1">Preview</button>
+                            </div>
+                        </div>
+
+                        <div class="panel-section">
+                            <div class="nz-preview-grid">
+                                <div class="nz-preview-cell">
+                                    <span class="nz-preview-label">Reference</span>
+                                    <canvas id="nz-canvas-reference"></canvas>
+                                </div>
+                                <div class="nz-preview-cell">
+                                    <span class="nz-preview-label">Before</span>
+                                    <canvas id="nz-canvas-before"></canvas>
+                                </div>
+                                <div class="nz-preview-cell">
+                                    <span class="nz-preview-label">After</span>
+                                    <canvas id="nz-canvas-after"></canvas>
+                                </div>
+                            </div>
+                            <p id="nz-info" class="help-text"></p>
+                        </div>
+
+                        <div class="panel-section">
+                            <div id="nz-warnings" class="nz-warnings"></div>
+                        </div>
+
+                        <div class="panel-section">
+                            <button id="nz-run-btn" class="btn btn-primary full-width">Normalize &amp; Export…</button>
                         </div>
                     </div>
                 </div>
@@ -430,4 +630,5 @@
 </body>
 
 </html>
+
 

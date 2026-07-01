@@ -93,6 +93,7 @@ export class PlayerModeController extends EventEmitter {
 
         // Auto-select new slot
         this.selectSlot(id);
+        if (slot.isInteractive) this.ensureAnimationLoop();
 
         return slot;
     }
@@ -200,6 +201,34 @@ export class PlayerModeController extends EventEmitter {
         this.emit('slot-moved', slot);
     }
 
+
+    handlePointerMove(x: number, y: number): void {
+        const slot = this.selectedSlot;
+        if (slot?.isInteractive) {
+            this.ensureAnimationLoop();
+            slot.handlePointerMove(x, y);
+            this.emit('frame-updated');
+        }
+    }
+
+    handleClick(x: number, y: number): void {
+        const slot = this.selectedSlot;
+        if (slot?.isInteractive) {
+            this.ensureAnimationLoop();
+            slot.handleClick(x, y);
+            this.emit('frame-updated');
+        }
+    }
+
+
+    handlePointerLeave(): void {
+        const slot = this.selectedSlot;
+        if (slot?.isInteractive) {
+            slot.stop();
+            this.emit('frame-updated');
+        }
+    }
+
     /**
      * Reorder slots (change z-index)
      */
@@ -211,12 +240,27 @@ export class PlayerModeController extends EventEmitter {
         const [moved] = slots.splice(fromIndex, 1);
         slots.splice(toIndex, 0, moved);
 
-        // Update z-indices
+        this.applySlotOrder(slots);
+    }
+
+    setSlotOrder(slotIds: string[]): void {
+        const ordered = slotIds
+            .map(id => this._slots.get(id))
+            .filter((slot): slot is AnimationSlot => Boolean(slot));
+        const orderedIds = new Set(ordered.map(slot => slot.id));
+        for (const slot of this.slots) {
+            if (!orderedIds.has(slot.id)) ordered.push(slot);
+        }
+        this.applySlotOrder(ordered);
+    }
+
+    private applySlotOrder(slots: AnimationSlot[]): void {
         slots.forEach((slot, i) => {
             slot.zIndex = i;
         });
 
         this.emit('slots-reordered');
+        this.emit('linear-slot-changed', this._currentLinearSlotIndex);
     }
 
     // ========================================================================
@@ -307,9 +351,7 @@ export class PlayerModeController extends EventEmitter {
             this.startLinearSlot(this._currentLinearSlotIndex);
         }
 
-        // Start animation loop
-        this._animationLoop = createAnimationLoop((dt) => this.update(dt));
-        this._animationLoop.start();
+        this.ensureAnimationLoop();
 
         this.emit('playback-changed', true);
     }
@@ -323,6 +365,7 @@ export class PlayerModeController extends EventEmitter {
 
         // Stop animation loop
         this._animationLoop?.stop();
+        this._animationLoop = null;
 
         this.emit('playback-changed', false);
     }
@@ -338,12 +381,19 @@ export class PlayerModeController extends EventEmitter {
     stop(): void {
         this._playing = false;
         this._animationLoop?.stop();
+        this._animationLoop = null;
 
         // Stop all slots
         this._slots.forEach(slot => slot.stop());
         this._currentLinearSlotIndex = 0;
 
         this.emit('playback-changed', false);
+    }
+
+    private ensureAnimationLoop(): void {
+        if (this._animationLoop) return;
+        this._animationLoop = createAnimationLoop((dt) => this.update(dt));
+        this._animationLoop.start();
     }
 
     /**

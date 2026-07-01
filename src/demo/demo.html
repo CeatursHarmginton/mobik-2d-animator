@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Mobik — Interactive Mascot Demo</title>
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0b1016;
+            color: #e6edf3;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            padding: 22px;
+        }
+        h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: .3px; }
+        p.sub { margin: 0; color: #8aa0b2; font-size: 13px; }
+        #stage {
+            border-radius: 12px;
+            box-shadow: 0 12px 40px rgba(0,0,0,.5);
+            cursor: crosshair;
+        }
+        #hud {
+            font-family: 'JetBrains Mono', Consolas, monospace;
+            font-size: 12px;
+            background: #121b24;
+            border: 1px solid #1e2c39;
+            border-radius: 8px;
+            padding: 10px 14px;
+            min-width: 640px;
+            line-height: 1.6;
+            color: #b9cad6;
+        }
+        #hud b { color: #54c8a6; font-weight: 600; }
+        .controls { display: flex; gap: 10px; }
+        button {
+            background: #1c2733;
+            color: #e6edf3;
+            border: 1px solid #2c3c4c;
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background .15s, border-color .15s;
+        }
+        button:hover { background: #26384a; border-color: #3d566c; }
+        .hint { color: #6f8597; font-size: 12px; max-width: 720px; text-align: center; }
+        .hint kbd {
+            background: #1c2733; border: 1px solid #2c3c4c; border-radius: 4px;
+            padding: 1px 6px; font-family: monospace; color: #cfe;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Interactive Mascot</h1>
+    <p class="sub">Reusing the real <code>core/mascot</code> runtime + the sample JSON config</p>
+
+    <canvas id="stage" width="720" height="520"></canvas>
+
+    <div id="hud">loading…</div>
+
+    <div class="controls">
+        <button id="btn-wave">👋 Wave</button>
+        <button id="btn-blink">😑 Blink</button>
+        <button id="btn-idle">🧍 Idle</button>
+        <button id="btn-debug">🐞 Toggle debug</button>
+    </div>
+
+    <p class="hint">
+        <b>Move the cursor</b> around the stage — the mascot's head and eyes follow it
+        (<kbd>look_at_cursor</kbd> pose set). <b>Click on the mascot</b> to make it wave.
+        Move the cursor off the stage and wait — it returns to idle and blinks on its own.
+    </p>
+
+    <script>
+        // Electron renderer with nodeIntegration: load the compiled CommonJS demo.
+        require('./interactive-demo.js');
+    </script>
+</body>
+
+</html>

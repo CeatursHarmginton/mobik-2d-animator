@@ -6,9 +6,9 @@
 import { Project } from '../models/Project';
 import { Frame } from '../models/Frame';
 import {
-    PaletteMatchOptions,
+    ApplyPaletteMatchToFramesOptions,
     ReferencePalette,
-    applyPaletteMatch,
+    applyPaletteMatchAcrossFrames,
     extractReferencePalette
 } from '../color/ReferencePaletteMatcher';
 
@@ -20,7 +20,7 @@ export interface ColorAdjustments {
     invert: number;        // 0 to 100, default 0
 }
 
-export interface ReferencePaletteMatchExportOptions extends PaletteMatchOptions {
+export interface ReferencePaletteMatchExportOptions extends ApplyPaletteMatchToFramesOptions {
     enabled: boolean;
     referenceIndex: number;
     referenceImageData?: ImageData;
@@ -118,6 +118,11 @@ export class SpritesheetExporter {
         let paletteMatchChangedPixels = 0;
         const targetIndices = new Set(paletteMatch?.targetIndices ?? frames.map((_, index) => index));
 
+        // Cross-frame matched results (aligned by frame index). Computed up-front
+        // with a single shared plan so animation colors stay stable frame-to-frame.
+        let matchedByIndex: (ImageData | null)[] | null = null;
+        let sourceByIndex: (ImageData | null)[] | null = null;
+
         if (usePaletteMatch && paletteMatch) {
             const referenceData = paletteMatch.referenceImageData ?? (() => {
                 const referenceFrame = frames[Math.max(0, Math.min(frames.length - 1, paletteMatch.referenceIndex))];
@@ -125,6 +130,23 @@ export class SpritesheetExporter {
             })();
             if (referenceData) {
                 referencePalette = extractReferencePalette(referenceData, paletteMatch);
+            }
+
+            if (referencePalette && referencePalette.colors.length > 0) {
+                // Rasterize every frame once so the shared plan can sample the whole
+                // animation, not just the current frame.
+                sourceByIndex = frames.map(frame => this.getFrameImageData(frame));
+                const placeholder = new ImageData(1, 1);
+                const dense = sourceByIndex.map(data => data ?? placeholder);
+                const effectiveTargets = [...targetIndices].filter(index => sourceByIndex![index] != null);
+
+                matchedByIndex = applyPaletteMatchAcrossFrames(dense, referencePalette, {
+                    ...paletteMatch,
+                    targetIndices: effectiveTargets,
+                    // Default to global_sheet here (stable animation colors); an
+                    // explicit paletteMatch.paletteConsistency still wins.
+                    paletteConsistency: paletteMatch.paletteConsistency ?? 'global_sheet'
+                });
             }
         } else {
             const filterStr = SpritesheetExporter.buildFilterString(options);
@@ -142,11 +164,11 @@ export class SpritesheetExporter {
             const cellX = col * maxScaledW;
             const cellY = row * maxScaledH;
 
-            if (usePaletteMatch && paletteMatch && referencePalette && targetIndices.has(i)) {
-                const frameData = this.getFrameImageData(frame);
-                if (!frameData) continue;
-                const matched = applyPaletteMatch(frameData, referencePalette, paletteMatch);
-                paletteMatchChangedPixels += this.countChangedOpaquePixels(frameData, matched, paletteMatch.alphaThreshold ?? 10);
+            const sourceData = sourceByIndex?.[i] ?? null;
+            const matched = matchedByIndex?.[i] ?? null;
+
+            if (usePaletteMatch && referencePalette && targetIndices.has(i) && sourceData && matched) {
+                paletteMatchChangedPixels += this.countChangedOpaquePixels(sourceData, matched, paletteMatch?.alphaThreshold ?? 10);
                 const frameCanvas = this.imageDataToCanvas(matched);
                 ctx.drawImage(frameCanvas, 0, 0, frame.sourceRect.w, frame.sourceRect.h, cellX, cellY, scaledW, scaledH);
             } else {

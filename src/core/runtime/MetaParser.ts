@@ -1,156 +1,196 @@
 /**
  * Meta Parser - Shared parser for runtime meta.json format
- * Used by both AnimationPlayer and MetaExporter for consistency
+ * Supports legacy single-animation Mobik JSON and extended interactive mascot JSON.
  * @module core/runtime/MetaParser
  */
 
-import { RuntimeMeta, RuntimeFrame, AnimationData, ParsedFrame } from './types';
+import {
+    AnimationClipMeta,
+    AnimationData,
+    NormalizedMobikMeta,
+    ParsedFrame,
+    RuntimeFrame,
+    RuntimeMeta
+} from './types';
+
+interface GridResolveOptions {
+    imageWidth: number;
+    imageHeight: number;
+    sourceFile?: string;
+}
 
 export class MetaParser {
-    /**
-     * Parse runtime meta JSON string into AnimationData
-     */
+    /** Parse default/legacy animation JSON into AnimationData. */
     static parse(json: string): AnimationData {
         const meta = JSON.parse(json) as RuntimeMeta;
         return this.parseObject(meta);
     }
 
     /**
-     * Parse runtime meta object into AnimationData
-     * Supports both runtime format (fps, arrays) and project format (defaultFPS, objects)
-     * Also supports compact grid format (v1.1) where frames are auto-generated
+     * Normalize legacy and extended Mobik JSON into one runtime shape.
+     * Legacy nimation is retained as legacyAnimation and also inserted into
+     * animations under its clip name when no duplicate exists.
      */
-    static parseObject(meta: RuntimeMeta): AnimationData {
-        meta = this.normalizeExternalMeta(meta);
-        this.validate(meta);
+    static normalizeMobikMeta(meta: RuntimeMeta | any): NormalizedMobikMeta {
+        const normalizedExternal = this.normalizeExternalMeta(meta);
+        const animations: Record<string, AnimationClipMeta> = { ...(normalizedExternal.animations ?? {}) };
 
-        // Support both runtime format (fps) and project format (defaultFPS)
-        const fps = meta.animation.fps ?? (meta.animation as any).defaultFPS;
-        const baseDuration = 1 / fps;
-
-        // === Compact grid format: auto-generate frames ===
-        if (meta.animation.grid && (!meta.animation.frames || meta.animation.frames.length === 0)) {
-            return this._parseCompactFormat(meta, fps, baseDuration);
-        }
-
-        const frames: ParsedFrame[] = [];
-        let currentTime = 0;
-
-        for (let i = 0; i < meta.animation.frames.length; i++) {
-            const rf = meta.animation.frames[i] as any;
-
-            // Support both runtime format (arrays) and project format (objects)
-            const isRuntimeFormat = Array.isArray(rf.rect);
-
-            let sourceRect: { x: number, y: number, w: number, h: number };
-            let pivot: { x: number, y: number };
-            let offset: { x: number, y: number };
-            let scale: { x: number, y: number };
-            let sourceFile: string;
-            let duration: number;
-
-            if (isRuntimeFormat) {
-                // Runtime format: arrays
-                sourceRect = { x: rf.rect[0], y: rf.rect[1], w: rf.rect[2], h: rf.rect[3] };
-                pivot = { x: rf.pivot[0], y: rf.pivot[1] };
-                offset = { x: rf.offset[0], y: rf.offset[1] };
-                scale = { x: rf.scale?.[0] ?? 1, y: rf.scale?.[1] ?? 1 };
-                sourceFile = rf.src;
-                duration = rf.dur;
-            } else {
-                // Project format: objects
-                sourceRect = rf.sourceRect;
-                pivot = rf.pivot;
-                offset = rf.offset;
-                scale = rf.scale ?? { x: 1, y: 1 };
-                sourceFile = rf.sourceFile;
-                duration = rf.duration;
+        if (normalizedExternal.animation) {
+            const legacyName = normalizedExternal.animation.name || 'default';
+            if (!animations[legacyName]) {
+                animations[legacyName] = normalizedExternal.animation;
             }
-
-            const frameDuration = baseDuration * duration;
-
-            frames.push({
-                index: i,
-                sourceFile,
-                sourceRect,
-                pivot,
-                offset,
-                scale,
-                duration,
-                startTime: currentTime,
-                endTime: currentTime + frameDuration
-            });
-
-            currentTime += frameDuration;
         }
 
         return {
-            name: meta.animation.name,
-            fps: fps,
-            loop: meta.animation.loop,
-            totalDuration: currentTime,
-            frames: frames
+            version: normalizedExternal.version || '1.0.0',
+            format: normalizedExternal.format || 'mobik-animation',
+            project: normalizedExternal.project,
+            source: normalizedExternal.source,
+            spriteSheet: normalizedExternal.spriteSheet,
+            spriteSheets: normalizedExternal.spriteSheets,
+            legacyAnimation: normalizedExternal.animation || null,
+            animations,
+            poseSets: normalizedExternal.poseSets || {},
+            interactive: normalizedExternal.interactive || null
         };
     }
 
-    /**
-     * Parse compact grid format — auto-generate frames from grid layout
-     */
-    private static _parseCompactFormat(meta: RuntimeMeta, fps: number, baseDuration: number): AnimationData {
-        const grid = meta.animation.grid!;
-        const cols = grid.columns;
-        const rows = grid.rows;
-        const totalFrames = grid.frameCount ?? (cols * rows);
+    /** Parse a named clip, or the legacy/default clip when name is omitted. */
+    static parseObject(meta: RuntimeMeta | any, animationName?: string): AnimationData {
+        const normalized = this.normalizeMobikMeta(meta);
+        this.validateNormalized(normalized);
 
-        // Helper: normalize [x,y] or {x,y} to {x,y}
-        const toXY = (val: any, def: [number, number]): { x: number; y: number } => {
-            if (!val) return { x: def[0], y: def[1] };
-            if (Array.isArray(val)) return { x: val[0], y: val[1] };
-            return { x: val.x ?? def[0], y: val.y ?? def[1] };
-        };
+        const clipName = animationName || this.getDefaultAnimationName(normalized);
+        const clip = normalized.animations[clipName];
+        if (!clip) {
+            throw new Error('Invalid meta: missing animation ' + clipName);
+        }
 
-        // Shared properties (defaults)
-        const sharedPivot = toXY(meta.animation.pivot, [0.5, 1.0]);
-        const sharedOffset = toXY(meta.animation.offset, [0, 0]);
-        const sharedScale = toXY(meta.animation.scale, [1, 1]);
-        const srcFile = meta.spriteSheet || '';
+        return this.parseClip(clip, clip.name || clipName, normalized);
+    }
 
+    /** Parse all named animation clips. */
+    static parseAnimations(meta: RuntimeMeta | any): Record<string, AnimationData> {
+        const normalized = this.normalizeMobikMeta(meta);
+        this.validateNormalized(normalized);
+
+        const parsed: Record<string, AnimationData> = {};
+        for (const [name, clip] of Object.entries(normalized.animations)) {
+            parsed[name] = this.parseClip(clip, clip.name || name, normalized);
+        }
+        return parsed;
+    }
+
+    static getDefaultAnimationName(meta: NormalizedMobikMeta): string {
+        if (meta.legacyAnimation) return meta.legacyAnimation.name || 'default';
+        return Object.keys(meta.animations)[0] || 'default';
+    }
+
+    static parseClip(clip: AnimationClipMeta, name: string, meta?: NormalizedMobikMeta): AnimationData {
+        const fps = clip.fps ?? clip.defaultFPS ?? 12;
+        if (typeof fps !== 'number' || fps <= 0) {
+            throw new Error('Invalid meta: animation ' + name + ' fps must be a positive number');
+        }
+
+        const baseDuration = 1 / fps;
+        const rawFrames = Array.isArray(clip.frames) ? clip.frames : [];
         const frames: ParsedFrame[] = [];
         let currentTime = 0;
 
-        // We don't know image dimensions here — use 0 as placeholder
-        // The actual dimensions will be filled in when the image loads
-        for (let i = 0; i < totalFrames; i++) {
-            const frameDuration = baseDuration;
-            frames.push({
-                index: i,
-                sourceFile: srcFile,
-                sourceRect: { x: 0, y: 0, w: 0, h: 0 }, // Placeholder — resolved by image loader
-                pivot: { ...sharedPivot },
-                offset: { ...sharedOffset },
-                scale: { ...sharedScale },
-                duration: 1,
-                startTime: currentTime,
-                endTime: currentTime + frameDuration
-            });
-            currentTime += frameDuration;
+        if (clip.grid && rawFrames.length === 0) {
+            const frameCount = clip.grid.frameCount ?? clip.frameCount ?? (clip.grid.columns * clip.grid.rows);
+            for (let i = 0; i < frameCount; i++) {
+                const duration = 1;
+                const frameDuration = baseDuration * duration;
+                frames.push({
+                    index: i,
+                    sourceFile: this.getClipSourceFile(clip, meta),
+                    sourceRect: { x: 0, y: 0, w: 0, h: 0 },
+                    pivot: this.toXY(clip.pivot, [0.5, 1.0]),
+                    offset: this.toXY(clip.offset, [0, 0]),
+                    scale: this.toXY(clip.scale, [1, 1]),
+                    duration,
+                    startTime: currentTime,
+                    endTime: currentTime + frameDuration
+                });
+                currentTime += frameDuration;
+            }
+        } else {
+            for (let i = 0; i < rawFrames.length; i++) {
+                const parsed = this.parseFrame(rawFrames[i], i, clip, meta);
+                const frameDuration = baseDuration * parsed.duration;
+                frames.push({
+                    ...parsed,
+                    startTime: currentTime,
+                    endTime: currentTime + frameDuration
+                });
+                currentTime += frameDuration;
+            }
         }
 
         return {
-            name: meta.animation.name,
+            name,
             fps,
-            loop: meta.animation.loop,
+            loop: clip.loop ?? true,
+            targetSize: clip.targetSize,
+            safeFrames: clip.safeFrames,
+            speed: clip.speed ?? 1,
             totalDuration: currentTime,
             frames
         };
     }
 
     /**
-     * Normalize common external spritesheet JSON formats into Mobik runtime meta.
-     * Supports TexturePacker/Phaser-style JSON used by Ludo exports.
+     * Resolve compact grid sourceRects after a spritesheet image is available.
+     * Valid explicit sourceRects are preserved. Zero-size frames are resolved
+     * when grid metadata exists.
      */
+    static resolveCompactFrames(
+        animation: AnimationData,
+        clip: AnimationClipMeta | undefined,
+        meta: NormalizedMobikMeta | RuntimeMeta | any,
+        options: GridResolveOptions
+    ): void {
+        if (!clip?.grid || animation.frames.length === 0) return;
+
+        const normalized = 'animations' in meta && 'legacyAnimation' in meta
+            ? meta as NormalizedMobikMeta
+            : this.normalizeMobikMeta(meta);
+
+        const grid = clip.grid;
+        if (!grid.columns || !grid.rows) return;
+
+        const sheetConfig = normalized.source?.sheetConfig;
+        const cellWidth = Math.max(1, Math.floor(sheetConfig?.gridWidth || (options.imageWidth / grid.columns)));
+        const cellHeight = Math.max(1, Math.floor(sheetConfig?.gridHeight || (options.imageHeight / grid.rows)));
+        const startFrame = grid.startFrame ?? 0;
+        const sourceFile = options.sourceFile || this.getClipSourceFile(clip, normalized);
+
+        animation.frames.forEach((frame, localIndex) => {
+            const hasValidRect = frame.sourceRect.w > 0 && frame.sourceRect.h > 0;
+            if (hasValidRect) return;
+
+            const globalIndex = startFrame + localIndex;
+            const col = globalIndex % grid.columns;
+            const row = Math.floor(globalIndex / grid.columns);
+            frame.sourceFile = frame.sourceFile || sourceFile;
+            frame.sourceRect = {
+                x: col * cellWidth,
+                y: row * cellHeight,
+                w: cellWidth,
+                h: cellHeight
+            };
+        });
+    }
+
+    static hasZeroSizeFrames(animation: AnimationData): boolean {
+        return animation.frames.some(frame => frame.sourceRect.w <= 0 || frame.sourceRect.h <= 0);
+    }
+
+    /** Normalize TexturePacker/Phaser-style JSON into Mobik runtime meta. */
     private static normalizeExternalMeta(meta: any): RuntimeMeta {
-        if (meta?.animation || !meta?.frames || !meta?.meta?.image) {
+        if (meta?.animation || meta?.animations || !meta?.frames || !meta?.meta?.image) {
             return meta as RuntimeMeta;
         }
 
@@ -193,32 +233,69 @@ export class MetaParser {
         };
     }
 
-    /**
-     * Validate runtime meta structure
-     */
+    private static parseFrame(rawFrame: any, index: number, clip: AnimationClipMeta, meta?: NormalizedMobikMeta): ParsedFrame {
+        const isRuntimeFormat = Array.isArray(rawFrame?.rect);
+        const sourceRect = isRuntimeFormat
+            ? { x: Number(rawFrame.rect[0]) || 0, y: Number(rawFrame.rect[1]) || 0, w: Number(rawFrame.rect[2]) || 0, h: Number(rawFrame.rect[3]) || 0 }
+            : (rawFrame?.sourceRect || { x: 0, y: 0, w: 0, h: 0 });
+
+        return {
+            index,
+            sourceFile: isRuntimeFormat ? (rawFrame.src || this.getClipSourceFile(clip, meta)) : (rawFrame?.sourceFile || this.getClipSourceFile(clip, meta)),
+            sourceRect,
+            pivot: isRuntimeFormat ? this.toXY(rawFrame.pivot, [0.5, 1.0]) : this.toXY(rawFrame?.pivot ?? clip.pivot, [0.5, 1.0]),
+            offset: isRuntimeFormat ? this.toXY(rawFrame.offset, [0, 0]) : this.toXY(rawFrame?.offset ?? clip.offset, [0, 0]),
+            scale: isRuntimeFormat ? this.toXY(rawFrame.scale, [1, 1]) : this.toXY(rawFrame?.scale ?? clip.scale, [1, 1]),
+            duration: Math.max(0.001, Number(isRuntimeFormat ? rawFrame.dur : rawFrame?.duration) || 1),
+            startTime: 0,
+            endTime: 0
+        };
+    }
+
+    private static getClipSourceFile(clip: AnimationClipMeta, meta?: NormalizedMobikMeta): string {
+        const firstFrame = Array.isArray(clip.frames) ? clip.frames[0] as any : null;
+        return firstFrame?.src || firstFrame?.sourceFile || meta?.spriteSheet || meta?.source?.files?.[0] || '';
+    }
+
+    private static toXY(value: any, fallback: [number, number]): { x: number; y: number } {
+        if (!value) return { x: fallback[0], y: fallback[1] };
+        const rawX = Array.isArray(value) ? value[0] : value.x;
+        const rawY = Array.isArray(value) ? value[1] : value.y;
+        const x = Number(rawX);
+        const y = Number(rawY);
+        return {
+            x: Number.isFinite(x) ? x : fallback[0],
+            y: Number.isFinite(y) ? y : fallback[1]
+        };
+    }
+
     static validate(meta: RuntimeMeta): void {
-        if (!meta.animation) {
+        this.validateNormalized(this.normalizeMobikMeta(meta));
+    }
+
+    private static validateNormalized(meta: NormalizedMobikMeta): void {
+        const names = Object.keys(meta.animations);
+        if (names.length === 0) {
             throw new Error('Invalid meta: missing animation');
         }
-        // Compact format: grid is present, frames can be empty/missing
-        if (meta.animation.grid) {
-            if (meta.animation.grid.columns <= 0 || meta.animation.grid.rows <= 0) {
-                throw new Error('Invalid meta: grid columns and rows must be positive');
+
+        for (const name of names) {
+            const clip = meta.animations[name];
+            const fps = clip.fps ?? clip.defaultFPS ?? 12;
+            if (typeof fps !== 'number' || fps <= 0) {
+                throw new Error('Invalid meta: animation ' + name + ' fps must be a positive number');
             }
-        } else if (!Array.isArray(meta.animation.frames)) {
-            throw new Error('Invalid meta: frames must be an array');
-        }
-        // Support both runtime format (fps) and project format (defaultFPS)
-        const fps = meta.animation.fps ?? (meta.animation as any).defaultFPS;
-        if (typeof fps !== 'number' || fps <= 0) {
-            throw new Error('Invalid meta: fps must be a positive number');
+
+            if (clip.grid) {
+                if (clip.grid.columns <= 0 || clip.grid.rows <= 0) {
+                    throw new Error('Invalid meta: animation ' + name + ' grid columns and rows must be positive');
+                }
+            } else if (!Array.isArray(clip.frames)) {
+                throw new Error('Invalid meta: animation ' + name + ' frames must be an array');
+            }
         }
     }
 
-    /**
-     * Convert AnimationData back to RuntimeMeta format
-     * Used by MetaExporter for consistency
-     */
     static toRuntimeFormat(data: AnimationData): RuntimeMeta {
         return {
             version: '1.0.0',
@@ -226,14 +303,12 @@ export class MetaParser {
                 name: data.name,
                 fps: data.fps,
                 loop: data.loop,
-                frames: data.frames.map(f => this.frameToRuntime(f))
+                frames: data.frames.map(f => this.frameToRuntime(f)),
+                ...(data.targetSize && { targetSize: data.targetSize })
             }
         };
     }
 
-    /**
-     * Convert parsed frame to runtime format
-     */
     static frameToRuntime(frame: ParsedFrame): RuntimeFrame {
         return {
             src: frame.sourceFile,
@@ -245,14 +320,9 @@ export class MetaParser {
         };
     }
 
-    /**
-     * Get frame at specific time
-     * @returns Frame index, or -1 if no frames
-     */
     static getFrameAtTime(data: AnimationData, time: number): number {
         if (data.frames.length === 0) return -1;
 
-        // Handle looping
         let effectiveTime = time;
         if (data.loop && data.totalDuration > 0) {
             effectiveTime = time % data.totalDuration;
@@ -260,7 +330,6 @@ export class MetaParser {
             return data.frames.length - 1;
         }
 
-        // Binary search for efficiency with many frames
         for (let i = 0; i < data.frames.length; i++) {
             if (effectiveTime < data.frames[i].endTime) {
                 return i;
@@ -270,3 +339,4 @@ export class MetaParser {
         return data.frames.length - 1;
     }
 }
+

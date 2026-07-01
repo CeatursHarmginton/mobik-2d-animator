@@ -185,12 +185,15 @@ export class MetaExporter {
      * Generate export filename from project
      */
     static generateFilename(project: Project, extension: string = 'json'): string {
-        const name = project.name
+        const sourceName = project.source.files[0]
+            ? project.source.files[0].replace(/\.[^/.\\]+$/, '')
+            : project.name;
+        const name = sourceName
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '_')
             .replace(/^_|_$/g, '');
 
-        return `${name}_meta.${extension}`;
+        return `${name || 'untitled'}_meta.${extension}`;
     }
 
     /**

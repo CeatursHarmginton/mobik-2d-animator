@@ -5,31 +5,39 @@
  */
 
 /**
- * Runtime meta.json format
- * This is the structure produced by MetaExporter.exportRuntime()
+ * Runtime meta.json format.
+ * Supports the legacy single-animation format and the extended interactive
+ * mascot format. All new fields are optional so old exports remain valid.
  */
 export interface RuntimeMeta {
     version: string;
+    format?: 'mobik-animation' | 'mobik-interactive-mascot' | string;
+    project?: unknown;
+    source?: {
+        type?: string;
+        basePath?: string;
+        files?: string[];
+        sheetConfig?: {
+            gridWidth?: number;
+            gridHeight?: number;
+            columns?: number;
+            rows?: number;
+            padding?: number;
+            spacing?: number;
+        };
+    };
     /** Original sprite sheet filename for import */
     spriteSheet?: string;
-    animation: {
-        name: string;
-        fps: number;
-        loop: boolean;
-        frames: RuntimeFrame[];
-        /** Target size for pivot alignment - all animations with same targetSize will align correctly */
-        targetSize?: { w: number; h: number };
-
-        // --- Compact format fields (v1.1) ---
-        /** Grid layout for auto-slicing. When present, frames can be auto-generated */
-        grid?: { columns: number; rows: number; frameCount?: number };
-        /** Shared pivot for all frames (used when grid is present and frames are empty) */
-        pivot?: [number, number];
-        /** Shared offset for all frames */
-        offset?: [number, number];
-        /** Shared scale for all frames */
-        scale?: [number, number];
-    };
+    /** Sprite sheet filenames used by multi-part merged animations */
+    spriteSheets?: string[];
+    /** Legacy/default animation clip */
+    animation?: AnimationClipMeta;
+    /** Named animation clips for interactive mascot/runtime use */
+    animations?: Record<string, AnimationClipMeta>;
+    /** Input-selected frame sets. Pose sets are not FPS animations. */
+    poseSets?: Record<string, PoseSetConfig>;
+    /** Optional interactive mascot behavior config */
+    interactive?: InteractiveConfig | null;
     /** Color adjustments applied during export */
     colorAdjustments?: {
         brightness: number;
@@ -38,6 +46,42 @@ export interface RuntimeMeta {
         hue: number;
         invert: number;
     };
+}
+
+export interface AnimationGridMeta {
+    columns: number;
+    rows: number;
+    frameCount?: number;
+    startFrame?: number;
+}
+
+export interface AnimationClipMeta {
+    name?: string;
+    frameCount?: number;
+    fps?: number;
+    defaultFPS?: number;
+    loop?: boolean;
+    frames?: Array<RuntimeFrame | any>;
+    targetSize?: { w: number; h: number };
+    grid?: AnimationGridMeta;
+    pivot?: [number, number] | { x: number; y: number };
+    offset?: [number, number] | { x: number; y: number };
+    scale?: [number, number] | { x: number; y: number };
+    safeFrames?: number[] | { start: number; end: number };
+    speed?: number;
+}
+
+export interface NormalizedMobikMeta {
+    version: string;
+    format: string;
+    project?: unknown;
+    source?: RuntimeMeta['source'];
+    spriteSheet?: string;
+    spriteSheets?: string[];
+    legacyAnimation: AnimationClipMeta | null;
+    animations: Record<string, AnimationClipMeta>;
+    poseSets: Record<string, PoseSetConfig>;
+    interactive: InteractiveConfig | null;
 }
 
 /**
@@ -65,6 +109,9 @@ export interface AnimationData {
     name: string;
     fps: number;
     loop: boolean;
+    targetSize?: { w: number; h: number };
+    safeFrames?: number[] | { start: number; end: number };
+    speed: number;
     totalDuration: number;
     frames: ParsedFrame[];
 }
@@ -109,4 +156,113 @@ export interface RenderOptions {
     pivotColor?: string;
     /** Bounding box color */
     boundingBoxColor?: string;
+}
+
+export interface AngleFramesPoseSetConfig {
+    type: 'angleFrames';
+    frameCount?: number;
+    angleStartDeg?: number;
+    angleEndDeg?: number;
+    wrap?: boolean;
+    grid?: AnimationGridMeta;
+    frames?: Array<number | RuntimeFrame | any>;
+    pivot?: [number, number] | { x: number; y: number };
+    offset?: [number, number] | { x: number; y: number };
+    scale?: [number, number] | { x: number; y: number };
+    smoothing?: number;
+    deadZonePx?: number;
+    snapDegrees?: number;
+    hysteresisDegrees?: number;
+    maxDegreesPerSecond?: number;
+}
+
+export interface DirectionFramesPoseSetConfig {
+    type: 'directionFrames';
+    mode?: 'horizontal-only' | '4-direction' | '8-direction';
+    frames: Record<string, number | RuntimeFrame | any>;
+    pivot?: [number, number] | { x: number; y: number };
+    offset?: [number, number] | { x: number; y: number };
+    scale?: [number, number] | { x: number; y: number };
+}
+
+export type PoseSetConfig = AngleFramesPoseSetConfig | DirectionFramesPoseSetConfig | any;
+
+export type MascotStateType = 'clip' | 'frameSelector' | 'directionalClip';
+
+export interface MascotStateConfig {
+    type: MascotStateType | string;
+    animation?: string;
+    poseSet?: string;
+    input?: string;
+    directions?: Record<string, string>;
+    priority?: number;
+    loop?: boolean;
+    interruptible?: boolean;
+    cooldownMs?: number;
+    returnTo?: string | null;
+    transitionMs?: number;
+    speed?: number;
+}
+
+export interface MascotEventAction {
+    state?: string;
+    queue?: string;
+}
+
+export interface MascotHitAreaConfig {
+    name: string;
+    shape: 'rect' | string;
+    rect: { x: number; y: number; w: number; h: number };
+    priority?: number;
+    onClick?: string;
+    onHover?: string;
+    onLeave?: string;
+}
+
+export interface PointerTrackingConfig {
+    enabled?: boolean;
+    mode?: 'horizontal-only' | '4-direction' | '8-direction' | 'angle';
+    thresholdPx?: number;
+    debounceMs?: number;
+    maxDistancePx?: number;
+    state?: string;
+    directionStates?: Record<string, string>;
+}
+
+export interface IdleBehaviorConfig {
+    enabled?: boolean;
+    inactiveAfterMs?: number;
+    minDelayMs?: number;
+    maxDelayMs?: number;
+    pool?: Array<{ state: string; weight?: number; cooldownMs?: number }>;
+}
+
+export interface MascotQueueStep {
+    state: string;
+    waitBeforeMs?: number;
+    minDurationMs?: number;
+    maxDurationMs?: number;
+    allowInterrupt?: boolean;
+}
+
+export interface MascotRuleConfig {
+    event: string;
+    when?: {
+        currentState?: string;
+        userInactiveMsGreaterThan?: number;
+    };
+    action: MascotEventAction;
+}
+
+export interface InteractiveConfig {
+    defaultState?: string;
+    defaultTransitionMs?: number;
+    states?: Record<string, MascotStateConfig>;
+    events?: Record<string, MascotEventAction>;
+    hitAreas?: MascotHitAreaConfig[];
+    pointerTracking?: PointerTrackingConfig;
+    idleBehavior?: IdleBehaviorConfig;
+    queues?: Record<string, MascotQueueStep[]>;
+    rules?: MascotRuleConfig[];
+    debug?: { enabled?: boolean };
 }

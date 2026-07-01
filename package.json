@@ -7,9 +7,12 @@
     "start": "npm run build && electron .",
     "build": "tsc && npm run copy-static",
     "copy-static": "powershell -Command \"New-Item -ItemType Directory -Force -Path dist/renderer/styles | Out-Null; Copy-Item src/renderer/index.html dist/renderer/; Copy-Item src/renderer/styles/* dist/renderer/styles/\"",
+    "copy-demo": "powershell -Command \"New-Item -ItemType Directory -Force -Path dist/demo | Out-Null; Copy-Item src/demo/demo.html dist/demo/\"",
+    "demo": "npm run build && npm run copy-demo && electron dist/demo/demo-main.js",
     "dev": "tsc -w & electron .",
     "package": "electron-builder",
-    "test": "jest"
+    "test": "jest",
+    "normalize": "node dist/cli/normalize-cli.js"
   },
   "author": "Mobik Studio",
   "license": "MIT",
